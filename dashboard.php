@@ -18,62 +18,118 @@ $user_id = $_SESSION['user_id'];
 // Include database connection
 require_once 'includes/db_connect.php';
 
-// Initialize variables to prevent undefined errors
-$all_modules = [];
-$completed_modules = [];
-$in_progress_modules = [];
+// Initialize variables
 $all_modules_with_status = [];
+$in_progress_modules = [];
 $error_message = null;
 
 try {
-    // Check if PDO connection exists
     if (!isset($pdo) || !$pdo) {
         throw new Exception("Database connection not available");
     }
 
-    // Fetch all modules with their video information
-    $sql_modules = "SELECT m.id, m.title, m.description, m.module_order, v.thumbnail_path 
-                    FROM modules m
-                    LEFT JOIN videos v ON m.id = v.module_id
-                    ORDER BY m.module_order ASC";
+    // FIXED: Use separate queries approach (no complex subqueries with parameter issues)
     
-    $stmt_modules = $pdo->query($sql_modules);
-    
-    if ($stmt_modules) {
-        $all_modules = $stmt_modules->fetchAll(PDO::FETCH_ASSOC);
-    } else {
-        throw new Exception("Failed to fetch modules");
-    }
+    // 1. Get all modules with basic info
+    $sql_modules = "
+        SELECT m.id, m.title, m.description, m.module_order, v.thumbnail_path
+        FROM modules m
+        LEFT JOIN videos v ON m.id = v.module_id
+        ORDER BY m.module_order ASC
+    ";
+    $stmt_modules = $pdo->prepare($sql_modules);
+    $stmt_modules->execute();
+    $modules = $stmt_modules->fetchAll(PDO::FETCH_ASSOC);
 
-    // Fetch the user's completed modules
+    // 2. Get user progress (which modules have been watched)
     $sql_progress = "SELECT module_id FROM user_progress WHERE user_id = ?";
     $stmt_progress = $pdo->prepare($sql_progress);
+    $stmt_progress->execute([$user_id]);
+    $watched_modules = $stmt_progress->fetchAll(PDO::FETCH_COLUMN);
+
+    // 3. Get modules that have quizzes
+    $sql_quiz_modules = "SELECT DISTINCT module_id FROM questions WHERE module_id IS NOT NULL";
+    $stmt_quiz_modules = $pdo->prepare($sql_quiz_modules);
+    $stmt_quiz_modules->execute();
+    $modules_with_quiz = $stmt_quiz_modules->fetchAll(PDO::FETCH_COLUMN);
+
+    // 4. Get modules where user has taken quiz
+    $sql_taken_quizzes = "
+        SELECT DISTINCT q.module_id
+        FROM questions q
+        JOIN user_answers ua ON q.id = ua.question_id
+        WHERE ua.user_id = ? AND q.module_id IS NOT NULL
+    ";
+    $stmt_taken_quizzes = $pdo->prepare($sql_taken_quizzes);
+    $stmt_taken_quizzes->execute([$user_id]);
+    $quiz_taken_modules = $stmt_taken_quizzes->fetchAll(PDO::FETCH_COLUMN);
+
+    // Process modules to determine status and progress percentage
+    $completed_module_ids = [];
+    $all_modules = []; // Initialize the array
     
-    if ($stmt_progress && $stmt_progress->execute([$user_id])) {
-        $completed_modules = $stmt_progress->fetchAll(PDO::FETCH_COLUMN);
-    } else {
-        throw new Exception("Failed to fetch user progress");
+    foreach ($modules as $module) {
+        $module_id = $module['id'];
+        $has_watched_video = in_array($module_id, $watched_modules);
+        $has_quiz = in_array($module_id, $modules_with_quiz);
+        $has_taken_quiz = in_array($module_id, $quiz_taken_modules);
+        
+        // Add the flags to module data
+        $module['has_watched_video'] = $has_watched_video;
+        $module['has_quiz'] = $has_quiz;
+        $module['has_taken_quiz'] = $has_taken_quiz;
+        
+        // A module is completed if video is watched AND (no quiz OR quiz is taken)
+        if ($has_watched_video && (!$has_quiz || $has_taken_quiz)) {
+            $completed_module_ids[] = $module_id;
+        }
+        
+        $all_modules[] = $module;
     }
 
-    // Process modules to determine status
-    if (is_array($all_modules)) {
-        foreach ($all_modules as $index => $module) {
-            $is_completed = in_array($module['id'], $completed_modules);
-            $is_unlocked = ($index === 0 || ($index > 0 && in_array($all_modules[$index - 1]['id'], $completed_modules)));
+    // Now process each module for status and progress
+    foreach ($all_modules as $index => $module) {
+        $is_completed = in_array($module['id'], $completed_module_ids);
+        
+        // A module is unlocked if it's the first one OR the previous module is completed
+        $is_unlocked = ($index === 0 || ($index > 0 && in_array($all_modules[$index - 1]['id'], $completed_module_ids)));
 
-            $status = 'locked';
-            if ($is_completed) {
-                $status = 'completed';
-            } elseif ($is_unlocked) {
+        $status = 'locked';
+        $progress_percentage = 0;
+
+        if ($is_completed) {
+            $status = 'completed';
+            $progress_percentage = 100;
+        } elseif ($is_unlocked) {
+            if ($module['has_watched_video'] && $module['has_quiz'] && !$module['has_taken_quiz']) {
+                // Video watched but quiz not taken
                 $status = 'in_progress';
-                // Add module to in-progress list only if it's not completed
-                if (!$is_completed) {
-                    $in_progress_modules[] = $module;
+                $progress_percentage = 50;
+            } elseif ($module['has_watched_video'] && !$module['has_quiz']) {
+                // Video watched and no quiz required - should be completed
+                $status = 'completed';
+                $progress_percentage = 100;
+                // Add to completed list if not already there
+                if (!in_array($module['id'], $completed_module_ids)) {
+                    $completed_module_ids[] = $module['id'];
                 }
+            } elseif ($module['has_watched_video']) {
+                // Video watched but other conditions not met
+                $status = 'in_progress';
+                $progress_percentage = 50;
+            } else {
+                // Module unlocked but not started
+                $status = 'in_progress';
+                $progress_percentage = 0;
             }
-            
-            $module['status'] = $status;
-            $all_modules_with_status[] = $module;
+        }
+        
+        $module['status'] = $status;
+        $module['progress_percentage'] = $progress_percentage;
+        $all_modules_with_status[] = $module;
+
+        if ($status === 'in_progress') {
+            $in_progress_modules[] = $module;
         }
     }
 
@@ -148,7 +204,7 @@ endif;
         <!-- In Progress Section -->
         <div class="mb-12">
             <h2 class="text-2xl font-semibold text-gray-900 mb-6 flex items-center">
-                <svg class="w-6 h-6 mr-2 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-6 h-6 mr-2 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                 </svg>
                 In Progress (<?= count($in_progress_modules) ?>)
@@ -169,10 +225,20 @@ endif;
             <?php else: ?>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     <?php foreach ($in_progress_modules as $module): ?>
-                        <div class="bg-white p-6 rounded-lg shadow-md border-l-4 border-blue-500 hover:shadow-lg transition-shadow">
-                            <h3 class="text-lg font-bold text-gray-800 mb-4">
+                        <div class="bg-white p-6 rounded-lg shadow-md border-l-4 border-yellow-500 hover:shadow-lg transition-shadow">
+                            <h3 class="text-lg font-bold text-gray-800 mb-2">
                                 Module <?= htmlspecialchars($module['module_order']) ?>: <?= htmlspecialchars($module['title']) ?>
                             </h3>
+                            <!-- Progress Bar -->
+                            <div class="mb-4">
+                                <div class="flex justify-between mb-1">
+                                    <span class="text-xs font-medium text-gray-500">Progress</span>
+                                    <span class="text-xs font-medium text-gray-500"><?= $module['progress_percentage'] ?>%</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <div class="bg-yellow-500 h-2 rounded-full" style="width: <?= $module['progress_percentage'] ?>%"></div>
+                                </div>
+                            </div>
                             <a href="view_module.php?id=<?= htmlspecialchars($module['id']) ?>" 
                                class="block w-full text-center bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">
                                 Continue Learning
@@ -215,11 +281,9 @@ endif;
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" id="modules-grid-container">
                 <?php foreach ($all_modules_with_status as $module): ?>
                     <?php 
-                    // Handle thumbnail
                     if (!empty($module['thumbnail_path']) && file_exists('uploads/thumbnails/' . $module['thumbnail_path'])) {
                         $thumbnail_url = 'uploads/thumbnails/' . htmlspecialchars($module['thumbnail_path']);
                     } else {
-                        // Create a simple colored div as fallback
                         $thumbnail_url = null;
                     }
                     ?>
@@ -239,7 +303,6 @@ endif;
                                      onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                             <?php endif; ?>
                             
-                            <!-- Fallback thumbnail -->
                             <div class="w-full h-48 bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold text-2xl" 
                                  <?= $thumbnail_url ? 'style="display:none;"' : '' ?>>
                                 Module <?= htmlspecialchars($module['module_order']) ?>
@@ -271,9 +334,24 @@ endif;
                                 Module <?= htmlspecialchars($module['module_order']) ?>: <?= htmlspecialchars($module['title']) ?>
                             </h3>
                             
-                            <?php if (!empty($module['description'])): ?>
-                                <p class="text-sm text-gray-600 mb-4"><?= htmlspecialchars($module['description']) ?></p>
-                            <?php endif; ?>
+                            <!-- Progress Bar -->
+                            <div class="mb-4">
+                                <div class="flex justify-between mb-1">
+                                    <span class="text-xs font-medium text-gray-500">Progress</span>
+                                    <span class="text-xs font-medium text-gray-500"><?= $module['progress_percentage'] ?>%</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <?php
+                                    $progress_color = 'bg-gray-200';
+                                    if ($module['status'] === 'completed') {
+                                        $progress_color = 'bg-green-500';
+                                    } elseif ($module['status'] === 'in_progress') {
+                                        $progress_color = 'bg-yellow-500';
+                                    }
+                                    ?>
+                                    <div class="<?= $progress_color ?> h-2 rounded-full" style="width: <?= $module['progress_percentage'] ?>%"></div>
+                                </div>
+                            </div>
                             
                             <div class="mt-4">
                                 <?php if ($module['status'] === 'locked'): ?>
@@ -313,7 +391,7 @@ endif;
                                     </svg>
                                 </div>
                             <?php else: ?>
-                                <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                                <div class="w-8 h-8 bg-yellow-500 rounded-full flex items-center justify-center">
                                     <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                                     </svg>
@@ -325,19 +403,29 @@ endif;
                             <h3 class="text-lg font-semibold text-gray-800">
                                 Module <?= htmlspecialchars($module['module_order']) ?>: <?= htmlspecialchars($module['title']) ?>
                             </h3>
-                            <?php if (!empty($module['description'])): ?>
-                                <p class="text-sm text-gray-600"><?= htmlspecialchars($module['description']) ?></p>
-                            <?php endif; ?>
+                             <!-- Progress Bar -->
+                            <div class="mt-2">
+                                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                    <?php
+                                    $progress_color = 'bg-gray-200';
+                                    if ($module['status'] === 'completed') {
+                                        $progress_color = 'bg-green-500';
+                                    } elseif ($module['status'] === 'in_progress') {
+                                        $progress_color = 'bg-yellow-500';
+                                    }
+                                    ?>
+                                    <div class="<?= $progress_color ?> h-2.5 rounded-full" style="width: <?= $module['progress_percentage'] ?>%"></div>
+                                </div>
+                            </div>
                         </div>
                         
-                        <?php if ($module['status'] === 'completed'): ?>
-                            <div class="flex items-center space-x-2 text-green-600">
-                                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
-                                </svg>
-                                <span class="font-medium">Completed</span>
-                            </div>
-                        <?php endif; ?>
+                        <div class="flex-shrink-0 w-28 text-center">
+                            <?php if ($module['status'] === 'completed'): ?>
+                                <span class="font-medium text-green-600">Completed</span>
+                            <?php elseif ($module['status'] === 'in_progress'): ?>
+                                <span class="font-medium text-yellow-600"><?= $module['progress_percentage'] ?>%</span>
+                            <?php endif; ?>
+                        </div>
                         
                         <div class="flex-shrink-0">
                             <?php if ($module['status'] === 'locked'): ?>
