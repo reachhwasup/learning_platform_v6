@@ -4,8 +4,7 @@
  *
  * This script generates a downloadable PDF certificate for the logged-in user,
  * with styling that matches the modern certificate design.
- * 
- * Last Updated: <?= date('Y-m-d H:i:s') ?>
+ * * Last Updated: <?= date('Y-m-d H:i:s') ?>
  */
 
 // Clear any output buffers and disable caching
@@ -34,7 +33,8 @@ $user_id = $_SESSION['user_id'];
 
 // --- Fetch Certificate Data ---
 try {
-    $sql = "SELECT u.first_name, u.last_name, c.certificate_code, fa.score, fa.completed_at 
+    // FIX: Simplified query to match the new design
+    $sql = "SELECT u.first_name, u.last_name, fa.completed_at 
             FROM certificates c
             JOIN users u ON c.user_id = u.id
             JOIN final_assessments fa ON c.assessment_id = fa.id
@@ -55,13 +55,8 @@ try {
 // --- Extended FPDF Class for Advanced Features ---
 class CertificatePDF extends FPDF
 {
-    function Header() {
-        // This will be handled manually for better control
-    }
-    
-    function Footer() {
-        // This will be handled manually for better control
-    }
+    function Header() {}
+    function Footer() {}
     
     // Method to create rounded rectangle
     function RoundedRect($x, $y, $w, $h, $r, $style = '')
@@ -79,7 +74,6 @@ class CertificatePDF extends FPDF
         $xc = $x+$w-$r ;
         $yc = $y+$r;
         $this->_out(sprintf('%.2F %.2F l', $xc*$k,($hp-$y)*$k ));
-
         $this->_Arc($xc + $r*$MyArc, $yc - $r, $xc + $r, $yc - $r*$MyArc, $xc + $r, $yc);
         $xc = $x+$w-$r ;
         $yc = $y+$h-$r;
@@ -102,24 +96,6 @@ class CertificatePDF extends FPDF
         $this->_out(sprintf('%.2F %.2F %.2F %.2F %.2F %.2F c ', $x1*$this->k, ($h-$y1)*$this->k,
             $x2*$this->k, ($h-$y2)*$this->k, $x3*$this->k, ($h-$y3)*$this->k));
     }
-    
-    // Method to create gradient background
-    function LinearGradient($x, $y, $w, $h, $col1=array(), $col2=array(), $coords=array(0,0,1,0))
-    {
-        $this->Clip($x, $y, $w, $h);
-        $this->SetFillColor($col1[0], $col1[1], $col1[2]);
-        $this->Rect($x, $y, $w, $h, 'F');
-        
-        // Create multiple rectangles for gradient effect
-        $steps = 100;
-        for($i = 0; $i <= $steps; $i++) {
-            $r = $col1[0] + ($col2[0] - $col1[0]) * $i / $steps;
-            $g = $col1[1] + ($col2[1] - $col1[1]) * $i / $steps;
-            $b = $col1[2] + ($col2[2] - $col1[2]) * $i / $steps;
-            $this->SetFillColor($r, $g, $b);
-            $this->Rect($x, $y + ($h * $i / $steps), $w, $h / $steps, 'F');
-        }
-    }
 }
 
 // --- PDF Generation ---
@@ -129,136 +105,110 @@ $pdf->SetTitle("Certificate of Completion - " . $certificate['first_name'] . ' '
 $pdf->SetAutoPageBreak(false);
 
 // --- Background ---
-$pdf->SetFillColor(248, 250, 252); // Light gray background
+$pdf->SetFillColor(248, 249, 250);
 $pdf->Rect(0, 0, 297, 210, 'F');
 
+// --- Main Certificate Card ---
+$pdf->SetFillColor(255, 255, 255);
+$pdf->SetDrawColor(229, 231, 235);
+$pdf->SetLineWidth(0.2);
+$pdf->RoundedRect(10, 10, 277, 190, 8, 'DF');
+
 // --- Header Section with Gradient ---
-$pdf->SetFillColor(59, 88, 152); // Dark blue similar to design
-$pdf->RoundedRect(10, 10, 277, 50, 8, 'F');
+$pdf->SetFillColor(30, 60, 114); // Dark blue base
+$pdf->Rect(10, 10, 277, 55, 'F');
 
-// Add subtle gradient effect to header
-$pdf->SetFillColor(45, 75, 140);
-$pdf->RoundedRect(10, 10, 277, 25, 8, 'F');
-
-// Logo placeholder (circular background)
-$pdf->SetFillColor(255, 255, 255, 30); // Semi-transparent white
-$pdf->SetXY(135, 20);
-// Draw circle for logo background
-$pdf->SetFillColor(255, 255, 255, 50);
-for($i = 0; $i < 360; $i += 10) {
-    $x = 148 + 12 * cos(deg2rad($i));
-    $y = 35 + 12 * sin(deg2rad($i));
-    $pdf->SetXY($x, $y);
+// Logo
+$logoPath = '../../assets/images/logo.png';
+if (file_exists($logoPath)) {
+    // Center the logo horizontally, place it near the top
+    $pdf->Image($logoPath, 133.5, 15, 30); 
 }
 
 // Header Text
-$pdf->SetY(25);
-$pdf->SetFont('Arial', 'B', 18);
+$pdf->SetY(48); // Position text below the logo area
+$pdf->SetFont('Arial', 'B', 16);
 $pdf->SetTextColor(255, 255, 255);
 $pdf->Cell(0, 8, 'CERTIFICATE OF COMPLETION', 0, 1, 'C');
-$pdf->SetFont('Arial', '', 11);
+$pdf->SetFont('Arial', '', 10);
 $pdf->SetTextColor(220, 230, 255);
 $pdf->Cell(0, 6, 'Information Security Training Program', 0, 1, 'C');
 
+
 // --- Main Content Area ---
-$pdf->SetFillColor(255, 255, 255);
-$pdf->RoundedRect(25, 75, 247, 110, 12, 'F');
-
-// Add subtle border
-$pdf->SetDrawColor(230, 240, 255);
-$pdf->SetLineWidth(0.5);
-$pdf->RoundedRect(25, 75, 247, 110, 12, 'D');
-
 // "This certificate is proudly presented to" text
-$pdf->SetY(90);
+$pdf->SetY(80);
 $pdf->SetFont('Arial', '', 12);
 $pdf->SetTextColor(107, 114, 128);
 $pdf->Cell(0, 8, 'This certificate is proudly presented to', 0, 1, 'C');
 
-// Purple decorative line above name
-$pdf->SetDrawColor(139, 92, 246);
-$pdf->SetLineWidth(1);
-$pdf->Line(110, 105, 187, 105);
-
 // Recipient's Name
-$pdf->SetY(110);
-$pdf->SetFont('Arial', 'B', 28);
-$pdf->SetTextColor(59, 88, 152);
+$pdf->SetY(95);
+$pdf->SetFont('Arial', 'B', 32);
+$pdf->SetTextColor(30, 60, 114);
 $pdf->Cell(0, 15, $certificate['first_name'] . ' ' . $certificate['last_name'], 0, 1, 'C');
 
-// Purple decorative line below name
-$pdf->Line(110, 130, 187, 130);
-
 // "for successfully completing the" text
-$pdf->SetY(140);
+$pdf->SetY(115);
 $pdf->SetFont('Arial', '', 12);
 $pdf->SetTextColor(107, 114, 128);
 $pdf->Cell(0, 8, 'for successfully completing the', 0, 1, 'C');
 
 // Course Title
-$pdf->SetY(150);
-$pdf->SetFont('Arial', 'I', 16);
-$pdf->SetTextColor(59, 88, 152);
+$pdf->SetY(125);
+$pdf->SetFont('Arial', 'I', 18);
+$pdf->SetTextColor(42, 82, 152);
 $pdf->Cell(0, 10, 'Information Security Awareness Training', 0, 1, 'C');
 
 // --- Details Section ---
-$pdf->SetY(170);
+$pdf->SetY(150);
+$pdf->Line(40, 150, 257, 150); // Separator line
+
+$pdf->SetY(160);
 
 // Left column - Completion Date
 $pdf->SetFont('Arial', '', 9);
 $pdf->SetTextColor(107, 114, 128);
 $pdf->SetX(40);
-$pdf->Cell(70, 5, 'COMPLETION DATE', 0, 0, 'C');
+$pdf->Cell(72, 5, 'COMPLETION DATE', 0, 0, 'C');
 
-// Center column - Final Score
-$pdf->SetX(113);
-$pdf->Cell(70, 5, 'FINAL SCORE', 0, 0, 'C');
+// Center column - Status
+$pdf->SetX(112);
+$pdf->Cell(72, 5, 'STATUS', 0, 0, 'C');
 
-// Right column - Certificate ID
-$pdf->SetX(186);
-$pdf->Cell(70, 5, 'CERTIFICATE ID', 0, 1, 'C');
+// Right column - Authorized By
+$pdf->SetX(184);
+$pdf->Cell(72, 5, 'AUTHORIZED BY', 0, 1, 'C');
 
 // Values
-$pdf->SetY(177);
-$pdf->SetFont('Arial', 'B', 11);
-$pdf->SetTextColor(59, 88, 152);
+$pdf->SetY(167);
 
 // Completion Date
-$pdf->SetX(40);
-$pdf->Cell(70, 6, date('F j, Y', strtotime($certificate['completed_at'])), 0, 0, 'C');
-
-// Final Score with green background
-$pdf->SetX(113);
-$score = intval($certificate['score']);
-$pdf->SetFillColor(34, 197, 94); // Green background
-$pdf->SetTextColor(255, 255, 255);
-$pdf->RoundedRect(135, 175, 25, 8, 4, 'F');
-$pdf->Cell(70, 6, $score . ' points', 0, 0, 'C');
-
-// Certificate ID
-$pdf->SetX(186);
-$pdf->SetTextColor(59, 88, 152);
-$pdf->Cell(70, 6, $certificate['certificate_code'], 0, 1, 'C');
-
-// --- Authorization Section ---
-$pdf->SetY(195);
-$pdf->SetFont('Arial', '', 9);
-$pdf->SetTextColor(107, 114, 128);
-$pdf->Cell(0, 4, 'AUTHORIZED BY', 0, 1, 'C');
-
-// Signature line
-$pdf->SetDrawColor(180, 180, 180);
-$pdf->SetLineWidth(0.3);
-$pdf->Line(120, 205, 177, 205);
-
-$pdf->SetY(200);
 $pdf->SetFont('Arial', 'B', 11);
-$pdf->SetTextColor(59, 88, 152);
-$pdf->Cell(0, 5, 'Mr. Thol Lyna', 0, 1, 'C');
+$pdf->SetTextColor(30, 60, 114);
+$pdf->SetX(40);
+$pdf->Cell(72, 6, date('F j, Y', strtotime($certificate['completed_at'])), 0, 0, 'C');
 
+// Status Badge
+$pdf->SetX(112);
+$pdf->SetFillColor(16, 185, 129); // Green background
+$pdf->SetTextColor(255, 255, 255);
+$pdf->SetFont('Arial', 'B', 10);
+// Center the badge within its column
+$badgeX = 112 + (72 - 25) / 2; 
+$pdf->RoundedRect($badgeX, 166, 25, 8, 4, 'F');
+$pdf->Cell(72, 6, 'Passed', 0, 0, 'C');
+
+// Authorized By
+$pdf->SetX(184);
+$pdf->SetTextColor(30, 60, 114);
+$pdf->SetFont('Arial', 'B', 11);
+$pdf->Cell(72, 6, 'Mr. Thol Lyna', 0, 1, 'C');
 $pdf->SetFont('Arial', '', 9);
 $pdf->SetTextColor(107, 114, 128);
-$pdf->Cell(0, 4, 'Head of Information Technology', 0, 1, 'C');
+$pdf->SetX(184);
+$pdf->Cell(72, 4, 'Head of Information Technology', 0, 1, 'C');
+
 
 // --- Output the PDF ---
 $filename = 'Certificate_' . str_replace(' ', '_', $certificate['first_name'] . '_' . $certificate['last_name']) . '.pdf';

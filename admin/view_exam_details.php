@@ -56,8 +56,12 @@ $page_title = 'Exam Details for ' . htmlspecialchars($assessment['first_name'] .
 require_once 'includes/header.php';
 ?>
 <div class="container mx-auto p-6">
-    <div class="mb-6">
+    <div class="mb-6 flex justify-between items-center">
         <a href="reports.php" class="text-primary hover:underline">&larr; Back to Reports</a>
+        <a href="../api/admin/export_user_details.php?assessment_id=<?= $assessment_id ?>" 
+           class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors">
+            Export Details (Excel)
+        </a>
     </div>
 
     <div class="bg-white shadow-md rounded-lg p-6">

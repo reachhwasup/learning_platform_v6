@@ -35,9 +35,26 @@ try {
     $total_records = $total_records_stmt->fetchColumn();
     $total_pages = ceil($total_records / $records_per_page);
 
+    // --- FIX: Updated the subquery to correctly calculate module completion ---
+    // A module is now only considered complete if the video is watched AND the quiz is taken (if a quiz exists).
     $sql_users = "SELECT 
                     u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name, 
-                    (SELECT COUNT(*) FROM user_progress up WHERE up.user_id = u.id) as completed_modules
+                    (
+                        SELECT COUNT(DISTINCT up.module_id)
+                        FROM user_progress up
+                        WHERE up.user_id = u.id AND (
+                            -- Condition 1: The module has no quiz, so watching the video is enough.
+                            (SELECT COUNT(*) FROM questions q WHERE q.module_id = up.module_id) = 0
+                            OR
+                            -- Condition 2: The module has a quiz, and the user has submitted answers for it.
+                            EXISTS (
+                                SELECT 1
+                                FROM user_answers ua
+                                JOIN questions q_ua ON ua.question_id = q_ua.id
+                                WHERE ua.user_id = u.id AND q_ua.module_id = up.module_id
+                            )
+                        )
+                    ) as completed_modules
                   FROM users u 
                   LEFT JOIN departments d ON u.department_id = d.id 
                   {$where_sql}
@@ -54,10 +71,10 @@ try {
     $normal_users = $stmt_users->fetchAll();
 
     $sql_admins = "SELECT u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name 
-                   FROM users u 
-                   LEFT JOIN departments d ON u.department_id = d.id
-                   WHERE u.role = 'admin'
-                   ORDER BY u.first_name, u.last_name";
+                    FROM users u 
+                    LEFT JOIN departments d ON u.department_id = d.id
+                    WHERE u.role = 'admin'
+                    ORDER BY u.first_name, u.last_name";
     $stmt_admins = $pdo->query($sql_admins);
     $admin_users = $stmt_admins->fetchAll();
     

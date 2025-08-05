@@ -69,8 +69,11 @@ function render_results_table($title, $users, $status_context, $color) {
     echo "<div class='flex justify-between items-center mb-4'>";
     echo "<h2 class='text-2xl font-semibold text-gray-800'>" . htmlspecialchars($title) . " (" . count($users) . ")</h2>";
     
+    echo "<div class='flex gap-2'>";
     $export_params = http_build_query(['status' => $status_context] + $_GET);
-    echo "<a href='../api/admin/generate_report.php?{$export_params}' class='bg-{$color}-600 hover:bg-{$color}-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors'>Export List (Excel)</a>";
+    echo "<a href='../api/admin/export_basic.php?{$export_params}' class='bg-{$color}-500 hover:bg-{$color}-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors'>Export Summary</a>";
+    echo "<a href='../api/admin/generate_report.php?{$export_params}' class='bg-{$color}-600 hover:bg-{$color}-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors'>Export with Details</a>";
+    echo "</div>";
     echo "</div>";
 
     echo "<div class='bg-white shadow-md rounded-lg overflow-x-auto'>";
@@ -92,10 +95,11 @@ function render_results_table($title, $users, $status_context, $color) {
     if (empty($users)) {
         echo "<tr><td colspan='10' class='text-center py-10 text-gray-500'>No results found in this category.</td></tr>";
     } else {
-        foreach ($users as $index => $user) {
+        $counter = 1; // Start counter from 1 for each table
+        foreach ($users as $user) {
             $status_badge_class = $user['status'] === 'passed' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
             echo "<tr>
-                    <td class='px-5 py-5 border-b border-gray-200 bg-white text-sm'>" . ($index + 1) . "</td>
+                    <td class='px-5 py-5 border-b border-gray-200 bg-white text-sm'>" . $counter . "</td>
                     <td class='px-5 py-5 border-b border-gray-200 bg-white text-sm'>" . htmlspecialchars($user['first_name'] . ' ' . $user['last_name']) . "</td>
                     <td class='px-5 py-5 border-b border-gray-200 bg-white text-sm'>" . htmlspecialchars($user['staff_id']) . "</td>
                     <td class='px-5 py-5 border-b border-gray-200 bg-white text-sm'>" . htmlspecialchars($user['position'] ?? 'N/A') . "</td>
@@ -110,6 +114,7 @@ function render_results_table($title, $users, $status_context, $color) {
                         <a href='view_exam_details.php?assessment_id={$user['assessment_id']}' class='text-primary hover:underline'>View Details</a>
                     </td>
                   </tr>";
+            $counter++; // Increment counter for next row
         }
     }
     echo "</tbody></table></div></div>";

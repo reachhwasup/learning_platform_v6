@@ -1,25 +1,26 @@
 <?php 
 $page_title = 'My Certificates'; 
 require_once 'includes/auth_check.php'; 
-require_once 'includes/db_connect.php';  
+require_once 'includes/db_connect.php'; 
 
-$user_id = $_SESSION['user_id'];  
+$user_id = $_SESSION['user_id']; 
 
 // Fetch user's certificate data
-try {     
-    $sql = "SELECT u.first_name, u.last_name, c.certificate_code, fa.score, fa.completed_at              
-            FROM certificates c             
-            JOIN users u ON c.user_id = u.id             
-            JOIN final_assessments fa ON c.assessment_id = fa.id             
-            WHERE c.user_id = ?              
-            ORDER BY fa.completed_at DESC LIMIT 1";     
-    $stmt = $pdo->prepare($sql);     
-    $stmt->execute([$user_id]);     
+try { 
+    // FIX: Removed score and certificate_code from the query as they are no longer needed.
+    $sql = "SELECT u.first_name, u.last_name, fa.completed_at 
+            FROM certificates c 
+            JOIN users u ON c.user_id = u.id 
+            JOIN final_assessments fa ON c.assessment_id = fa.id 
+            WHERE c.user_id = ? 
+            ORDER BY fa.completed_at DESC LIMIT 1"; 
+    $stmt = $pdo->prepare($sql); 
+    $stmt->execute([$user_id]); 
     $certificate = $stmt->fetch(); 
-} catch (PDOException $e) {     
-    error_log("My Certificates Page Error: " . $e->getMessage());     
+} catch (PDOException $e) { 
+    error_log("My Certificates Page Error: " . $e->getMessage()); 
     $certificate = null; 
-}  
+} 
 
 require_once 'includes/header.php'; 
 ?>
@@ -40,13 +41,14 @@ require_once 'includes/header.php';
         margin: 0 auto;
     }
     
+    /* FIX: Reverted to a centered block layout */
     .certificate-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         color: white;
-        padding: 2rem;
-        text-align: center;
+        padding: 2.5rem;
         position: relative;
         overflow: hidden;
+        text-align: center;
     }
     
     .header-triangle-pattern {
@@ -64,21 +66,16 @@ require_once 'includes/header.php';
         background-position: 0 0, 30px 52px;
     }
     
+    /* FIX: Adjusted margin for centered layout */
     .certificate-logo {
-        width: 80px;
-        height: 80px;
-        margin: 0 auto 1.5rem;
-        display: block;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 50%;
-        padding: 10px;
-        backdrop-filter: blur(10px);
-        border: 2px solid rgba(255, 255, 255, 0.2);
+        width: 140px;
+        height: auto;
+        margin: 0 auto 1.5rem; /* Centered with bottom margin */
     }
     
     .certificate-logo img {
         width: 100%;
-        height: 100%;
+        height: auto;
         object-fit: contain;
         filter: brightness(0) invert(1);
     }
@@ -163,7 +160,7 @@ require_once 'includes/header.php';
     
     .certificate-details {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(3, 1fr);
         gap: 2rem;
         margin-top: 3rem;
         padding-top: 2rem;
@@ -188,7 +185,7 @@ require_once 'includes/header.php';
         color: #1e3c72;
     }
     
-    .score-badge {
+    .status-badge {
         display: inline-block;
         background: linear-gradient(135deg, #10b981 0%, #059669 100%);
         color: white;
@@ -286,16 +283,12 @@ require_once 'includes/header.php';
     }
     
     @media (max-width: 768px) {
+        /* FIX: No longer need specific header rules as it's now centered by default */
         .certificate-title { font-size: 2rem; }
         .recipient-name { font-size: 2.5rem; }
         .course-title { font-size: 1.4rem; }
-        .certificate-details { grid-template-columns: 1fr; gap: 1rem; }
+        .certificate-details { grid-template-columns: 1fr; gap: 1.5rem; }
         .certificate-body { padding: 2rem 1rem; }
-        .certificate-logo {
-            width: 60px;
-            height: 60px;
-            margin-bottom: 1rem;
-        }
     }
 </style>
 
@@ -305,11 +298,14 @@ require_once 'includes/header.php';
             <div class="certificate-card">
                 <div class="certificate-header">
                     <div class="header-triangle-pattern"></div>
-                    <div class="certificate-logo">
-                        <img src="assets/images/logo.png" alt="Organization Logo">
+                    <!-- FIX: Re-ordered for centered layout -->
+                    <div>
+                        <div class="certificate-logo">
+                            <img src="assets/images/logo.png" alt="Organization Logo">
+                        </div>
+                        <h1 class="text-3xl font-bold mb-2">CERTIFICATE OF COMPLETION</h1>
+                        <p class="text-xl opacity-90">Information Security Training Program</p>
                     </div>
-                    <h1 class="text-3xl font-bold mb-2">CERTIFICATE OF COMPLETION</h1>
-                    <p class="text-xl opacity-90">Information Security Training Program</p>
                 </div>
                 
                 <div class="certificate-body">
@@ -320,7 +316,7 @@ require_once 'includes/header.php';
                     <p class="text-lg text-gray-600 mb-4">This certificate is proudly presented to</p>
                     
                     <h2 class="recipient-name">
-                        <?= escape($certificate['first_name'] . ' ' . $certificate['last_name']) ?>
+                        <?= htmlspecialchars($certificate['first_name'] . ' ' . $certificate['last_name']) ?>
                     </h2>
                     
                     <p class="text-lg text-gray-600 mb-4">for successfully completing the</p>
@@ -336,16 +332,9 @@ require_once 'includes/header.php';
                         </div>
                         
                         <div class="detail-item">
-                            <div class="detail-label">Final Score</div>
+                            <div class="detail-label">Status</div>
                             <div class="detail-value">
-                                <span class="score-badge"><?= intval($certificate['score']) ?> points</span>
-                            </div>
-                        </div>
-                        
-                        <div class="detail-item">
-                            <div class="detail-label">Certificate ID</div>
-                            <div class="detail-value" style="font-family: monospace;">
-                                <?= escape($certificate['certificate_code']) ?>
+                                <span class="status-badge">Passed</span>
                             </div>
                         </div>
                         

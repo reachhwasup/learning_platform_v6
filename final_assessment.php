@@ -12,29 +12,45 @@ $show_results = false;
 $result_data = [];
 
 try {
-    // 2. Check if user has completed all modules
+    // 2. Check if user has completed all modules AND their corresponding quizzes
     $total_modules = $pdo->query("SELECT COUNT(*) FROM modules")->fetchColumn();
-    $stmt_progress = $pdo->prepare("SELECT COUNT(*) FROM user_progress WHERE user_id = ?");
-    $stmt_progress->execute([$user_id]);
-    $completed_modules = $stmt_progress->fetchColumn();
+    
+    // This query now calculates the number of fully completed modules.
+    // A module is considered complete if the video is watched AND the quiz is taken (if one exists).
+    $sql_completed_modules = "
+        SELECT COUNT(DISTINCT up.module_id)
+        FROM user_progress up
+        WHERE up.user_id = :user_id AND (
+            -- Condition 1: The module has no quiz, so watching the video is enough.
+            (SELECT COUNT(*) FROM questions q WHERE q.module_id = up.module_id) = 0
+            OR
+            -- Condition 2: The module has a quiz, and the user has submitted answers for it.
+            EXISTS (
+                SELECT 1
+                FROM user_answers ua
+                JOIN questions q_ua ON ua.question_id = q_ua.id
+                WHERE ua.user_id = up.user_id AND q_ua.module_id = up.module_id
+            )
+        )";
+    $stmt_completed = $pdo->prepare($sql_completed_modules);
+    $stmt_completed->execute([':user_id' => $user_id]);
+    $completed_modules = $stmt_completed->fetchColumn();
 
     if ($total_modules > 0 && $completed_modules >= $total_modules) {
         $can_take_assessment = true;
     } else {
-        $reason = "You must complete all learning modules before taking the final assessment.";
+        $reason = "You must complete all learning modules and their quizzes before taking the final assessment.";
     }
 
     // 3. Check if user has already passed the assessment (but allow retaking if requested)
     $has_passed = false;
     if ($can_take_assessment) {
-        // CORRECTED: Use 'completed_at' instead of 'created_at'
         $stmt_latest = $pdo->prepare("SELECT status FROM final_assessments WHERE user_id = ? ORDER BY completed_at DESC LIMIT 1");
         $stmt_latest->execute([$user_id]);
         $latest = $stmt_latest->fetch();
         
         if ($latest && $latest['status'] === 'passed') {
             $has_passed = true;
-            // Only prevent retaking if user hasn't specifically requested to retake
             if (!isset($_GET['retake']) || $_GET['retake'] != '1') {
                 $can_take_assessment = false;
                 $reason = "Congratulations! You have already passed the final assessment.";
@@ -53,7 +69,7 @@ try {
         if (!empty($questions)) {
             $question_ids = array_column($questions, 'id');
             $placeholders = implode(',', array_fill(0, count($question_ids), '?'));
-            $sql_options = "SELECT id, question_id, option_text FROM question_options WHERE question_id IN ($placeholders)";
+            $sql_options = "SELECT id, question_id, option_text FROM question_options WHERE question_id IN ($placeholders) ORDER BY RAND()";
             $stmt_options = $pdo->prepare($sql_options);
             $stmt_options->execute($question_ids);
             
@@ -72,7 +88,6 @@ try {
         } else {
             $question_ids = array_keys($submitted_answers);
             
-            // Validate that all questions were answered
             if (count($question_ids) < count($questions)) {
                  $error = "Please answer all " . count($questions) . " questions before submitting.";
             } else {
@@ -118,13 +133,11 @@ try {
     
                 $pdo->beginTransaction();
 
-                // Save the main assessment result
                 $sql_assessment = "INSERT INTO final_assessments (user_id, score, status) VALUES (?, ?, ?)";
                 $stmt_assessment = $pdo->prepare($sql_assessment);
                 $stmt_assessment->execute([$user_id, $score, $status]);
                 $assessment_id = $pdo->lastInsertId();
 
-                // Save each individual response
                 $sql_answers = "INSERT INTO user_answers (user_id, assessment_id, question_id, selected_option_id, is_correct) VALUES (?, ?, ?, ?, ?)";
                 $stmt_answers = $pdo->prepare($sql_answers);
                 foreach ($user_responses_to_save as $response) {
@@ -139,7 +152,6 @@ try {
                 
                 $pdo->commit();
 
-                // Prepare results for display - NOW $questions is properly defined
                 $show_results = true;
                 $result_data = ['score' => $score, 'total_score' => count($questions) * 5, 'status' => $status];
                 $can_take_assessment = false;

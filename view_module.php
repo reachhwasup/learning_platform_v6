@@ -60,9 +60,9 @@ try {
 
     // 6. Fetch module details
     $sql_module = "SELECT m.title, m.description, m.module_order, v.video_path 
-                   FROM modules m
-                   LEFT JOIN videos v ON m.id = v.module_id
-                   WHERE m.id = :module_id";
+                     FROM modules m
+                     LEFT JOIN videos v ON m.id = v.module_id
+                     WHERE m.id = :module_id";
     $stmt_module = $pdo->prepare($sql_module);
     $stmt_module->execute(['module_id' => $module_id]);
     $module = $stmt_module->fetch();
@@ -87,10 +87,19 @@ try {
         }
     }
     
+    // 9. Check if user has taken the quiz before
+    $has_taken_quiz = false;
+    if ($is_completed && !empty($questions)) {
+        $quiz_check_sql = "SELECT COUNT(*) FROM user_answers WHERE user_id = :user_id AND question_id IN (SELECT id FROM questions WHERE module_id = :module_id)";
+        $quiz_check_stmt = $pdo->prepare($quiz_check_sql);
+        $quiz_check_stmt->execute(['user_id' => $user_id, 'module_id' => $module_id]);
+        $answered_count = $quiz_check_stmt->fetchColumn();
+        $has_taken_quiz = $answered_count > 0;
+    }
+    
     // Determine the next step URL
     $next_step_url = $next_module_id ? "view_module.php?id=$next_module_id" : 'final_assessment.php';
     $next_step_text = $next_module_id ? 'Next Module' : 'Final Assessment';
-
 
 } catch (PDOException $e) {
     error_log("View Module Error: " . $e->getMessage());
@@ -112,24 +121,30 @@ require_once 'includes/header.php';
     <div class="flex justify-between items-center pb-4 mb-6 border-b">
         <a href="dashboard.php" class="text-gray-600 hover:text-gray-800 transition-colors flex items-center text-sm">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
+                <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
             </svg>
             Back
         </a>
-        <?php if ($is_completed): ?>
-        <a href="<?= $next_step_url ?>" class="text-primary hover:text-primary-dark transition-colors flex items-center text-sm font-semibold">
-            <?= $next_step_text ?>
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ml-1" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
-            </svg>
-        </a>
-        <?php endif; ?>
+        <div class="flex items-center space-x-4">
+            <?php if ($is_completed && !empty($questions)): ?>
+                <button id="header-take-quiz-btn" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors text-sm">
+                    <?= $has_taken_quiz ? 'Re-take Quiz' : 'Take Quiz' ?>
+                </button>
+            <?php endif; ?>
+            <?php if ($is_completed): ?>
+            <a href="<?= $next_step_url ?>" class="text-primary hover:text-primary-dark transition-colors flex items-center text-sm font-semibold">
+                <?= $next_step_text ?>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ml-1" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                </svg>
+            </a>
+            <?php endif; ?>
+        </div>
     </div>
 
     <!-- Module Title -->
     <h2 class="text-3xl font-bold text-gray-800 mb-2"><?= htmlspecialchars($module['title']) ?></h2>
     <p class="text-gray-600 mb-6"><?= htmlspecialchars($module['description']) ?></p>
-
 
     <!-- Video Player Section -->
     <div id="video-container">
@@ -160,11 +175,61 @@ require_once 'includes/header.php';
     </div>
 </div>
 
+<!-- Pre-Quiz Modal -->
+<div id="pre-quiz-modal" class="fixed z-50 inset-0 overflow-y-auto hidden">
+    <!-- FIX: Removed padding classes that prevented vertical centering -->
+    <div class="flex items-center justify-center min-h-screen p-4 text-center">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"></div>
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+            <div class="absolute top-0 right-0 pt-4 pr-4">
+                <button type="button" id="close-pre-quiz-modal" class="bg-white rounded-md text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    <span class="sr-only">Close</span>
+                    <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div class="sm:flex sm:items-start">
+                    <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10">
+                        <svg class="h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.79 4 4s-1.79 4-4 4-4-1.79-4-4c0-1.167.353-2.24.954-3.102M12 15.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 17.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9z" />
+                        </svg>
+                    </div>
+                    <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900" id="pre-quiz-modal-title">Are you ready to take the quiz?</h3>
+                        <div class="mt-2">
+                            <p class="text-sm text-gray-500" id="pre-quiz-modal-description">You have completed the video. You can now take the quiz to complete this module.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <a href="<?= $next_step_url ?>" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-gray-600 text-base font-medium text-white hover:bg-gray-700 sm:ml-3 sm:w-auto sm:text-sm">
+                    <?= $next_step_text ?>
+                </a>
+                <button type="button" id="pre-quiz-take-quiz-btn" class="mt-3 w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">Take Quiz</button>
+                <button type="button" id="pre-quiz-rewatch-btn" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:mt-0 sm:w-auto sm:text-sm">Re-watch Video</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Quiz Modal -->
 <div id="quiz-modal" class="fixed z-50 inset-0 overflow-y-auto hidden">
-    <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+    <!-- FIX: Removed padding classes that prevented vertical centering -->
+    <div class="flex items-center justify-center min-h-screen p-4 text-center">
         <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"></div>
         <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full">
+            <div class="absolute top-0 right-0 pt-4 pr-4">
+                <button type="button" id="close-quiz-modal-btn" class="bg-white rounded-md text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    <span class="sr-only">Close</span>
+                    <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
             <form id="quiz-form">
                 <input type="hidden" name="module_id" value="<?= $module_id ?>">
                 <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
@@ -215,6 +280,7 @@ require_once 'includes/header.php';
 document.addEventListener('DOMContentLoaded', function() {
     const video = document.getElementById('learning-video');
     const noQuizAlert = document.getElementById('no-quiz-alert');
+    const preQuizModal = document.getElementById('pre-quiz-modal');
     const quizModal = document.getElementById('quiz-modal');
     const quizForm = document.getElementById('quiz-form');
 
@@ -224,13 +290,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const videoContainer = document.getElementById('video-player-container'); 
     const customControls = document.getElementById('custom-controls');
     
-    const isModuleCompleted = <?php echo json_encode($is_completed); ?>;
+    let isModuleCompleted = <?php echo json_encode($is_completed); ?>;
+    let hasTakenQuiz = <?php echo json_encode($has_taken_quiz); ?>;
     let seekHandler = null;
-    let videoWatchingMode = !isModuleCompleted; // Track if user is in restricted watching mode
+    let headerTakeQuizBtn = document.getElementById('header-take-quiz-btn');
 
     function setupVideoControls() {
-        if (!videoWatchingMode) {
-            // Module completed or re-watching - enable full controls
+        if (isModuleCompleted) {
             video.controls = true;
             customControls.style.display = 'none';
             if (seekHandler) {
@@ -238,7 +304,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 seekHandler = null;
             }
         } else {
-            // First time watching - restricted controls
             video.controls = false;
             customControls.style.display = 'flex';
             customControls.innerHTML = `
@@ -262,112 +327,122 @@ document.addEventListener('DOMContentLoaded', function() {
                 </button>
             `;
             
-            setupCustomControls();
-            setupSeekPrevention();
+            const playPauseBtn = document.getElementById('play-pause-btn');
+            const playIcon = document.getElementById('play-icon');
+            const pauseIcon = document.getElementById('pause-icon');
+            const muteBtn = document.getElementById('mute-btn');
+            const volumeHighIcon = document.getElementById('volume-high-icon');
+            const volumeOffIcon = document.getElementById('volume-off-icon');
+            const volumeSlider = document.getElementById('volume-slider');
+            const currentTimeEl = document.getElementById('current-time');
+            const durationEl = document.getElementById('duration');
+            const fullscreenBtn = document.getElementById('fullscreen-btn');
+
+            videoContainer.addEventListener('mouseenter', () => { customControls.style.opacity = '1'; });
+            videoContainer.addEventListener('mouseleave', () => { if (!video.paused) customControls.style.opacity = '0'; });
+            const togglePlay = () => { video.paused ? video.play() : video.pause(); };
+            playPauseBtn.addEventListener('click', togglePlay);
+            video.addEventListener('click', togglePlay);
+            video.addEventListener('play', () => { playIcon.classList.add('hidden'); pauseIcon.classList.remove('hidden'); });
+            video.addEventListener('pause', () => { pauseIcon.classList.add('hidden'); playIcon.classList.remove('hidden'); customControls.style.opacity = '1'; });
+            muteBtn.addEventListener('click', () => { video.muted = !video.muted; });
+            video.addEventListener('volumechange', () => {
+                volumeSlider.value = video.volume;
+                if (video.muted || video.volume === 0) {
+                    volumeHighIcon.classList.add('hidden');
+                    volumeOffIcon.classList.remove('hidden');
+                } else {
+                    volumeOffIcon.classList.add('hidden');
+                    volumeHighIcon.classList.remove('hidden');
+                }
+            });
+            volumeSlider.addEventListener('input', (e) => { video.volume = e.target.value; video.muted = e.target.value == 0; });
+            const formatTime = (timeInSeconds) => { const result = new Date(timeInSeconds * 1000).toISOString().substr(14, 5); return result; };
+            video.addEventListener('loadedmetadata', () => { if(video.duration) durationEl.textContent = formatTime(video.duration); });
+            video.addEventListener('timeupdate', () => { currentTimeEl.textContent = formatTime(video.currentTime); });
+            fullscreenBtn.addEventListener('click', () => {
+                if (document.fullscreenElement) { document.exitFullscreen(); } 
+                else { videoContainer.requestFullscreen().catch(err => alert(`Error: ${err.message}`)); }
+            });
+
+            const createSeekHandler = () => {
+                let lastPlayedTime = 0;
+                return () => {
+                    if (!video.seeking && (video.currentTime > lastPlayedTime + 1.5)) {
+                        video.currentTime = lastPlayedTime;
+                    }
+                    lastPlayedTime = video.currentTime;
+                };
+            };
+            seekHandler = createSeekHandler();
+            video.addEventListener('timeupdate', seekHandler);
         }
     }
 
-    function setupCustomControls() {
-        const playPauseBtn = document.getElementById('play-pause-btn');
-        const playIcon = document.getElementById('play-icon');
-        const pauseIcon = document.getElementById('pause-icon');
-        const muteBtn = document.getElementById('mute-btn');
-        const volumeHighIcon = document.getElementById('volume-high-icon');
-        const volumeOffIcon = document.getElementById('volume-off-icon');
-        const volumeSlider = document.getElementById('volume-slider');
-        const currentTimeEl = document.getElementById('current-time');
-        const durationEl = document.getElementById('duration');
-        const fullscreenBtn = document.getElementById('fullscreen-btn');
-
-        if (!playPauseBtn) return; // Exit if elements not found
-
-        videoContainer.addEventListener('mouseenter', () => { customControls.style.opacity = '1'; });
-        videoContainer.addEventListener('mouseleave', () => { if (!video.paused) customControls.style.opacity = '0'; });
-        
-        const togglePlay = () => { video.paused ? video.play() : video.pause(); };
-        playPauseBtn.addEventListener('click', togglePlay);
-        video.addEventListener('click', togglePlay);
-        video.addEventListener('play', () => { playIcon.classList.add('hidden'); pauseIcon.classList.remove('hidden'); });
-        video.addEventListener('pause', () => { pauseIcon.classList.add('hidden'); playIcon.classList.remove('hidden'); customControls.style.opacity = '1'; });
-        
-        muteBtn.addEventListener('click', () => { video.muted = !video.muted; });
-        video.addEventListener('volumechange', () => {
-            volumeSlider.value = video.volume;
-            if (video.muted || video.volume === 0) {
-                volumeHighIcon.classList.add('hidden');
-                volumeOffIcon.classList.remove('hidden');
-            } else {
-                volumeOffIcon.classList.add('hidden');
-                volumeHighIcon.classList.remove('hidden');
-            }
-        });
-        volumeSlider.addEventListener('input', (e) => { video.volume = e.target.value; video.muted = e.target.value == 0; });
-        
-        const formatTime = (timeInSeconds) => { 
-            const result = new Date(timeInSeconds * 1000).toISOString().substr(14, 5); 
-            return result; 
-        };
-        video.addEventListener('loadedmetadata', () => { if(video.duration) durationEl.textContent = formatTime(video.duration); });
-        video.addEventListener('timeupdate', () => { currentTimeEl.textContent = formatTime(video.currentTime); });
-        
-        fullscreenBtn.addEventListener('click', () => {
-            if (document.fullscreenElement) { 
-                document.exitFullscreen(); 
-            } else { 
-                videoContainer.requestFullscreen().catch(err => alert(`Error: ${err.message}`)); 
-            }
-        });
-    }
-
-    function setupSeekPrevention() {
-        const createSeekHandler = () => {
-            let lastPlayedTime = 0;
-            return () => {
-                if (!video.seeking && (video.currentTime > lastPlayedTime + 1.5)) {
-                    video.currentTime = lastPlayedTime;
-                }
-                lastPlayedTime = video.currentTime;
-            };
-        };
-        seekHandler = createSeekHandler();
-        video.addEventListener('timeupdate', seekHandler);
-    }
-
-    // Initialize video controls
     setupVideoControls();
 
     // --- Completion Logic ---
     let progressTracked = false;
     video.addEventListener('ended', () => {
-        const wasAlreadyCompleted = <?php echo json_encode($is_completed); ?>;
+        const wasAlreadyCompleted = isModuleCompleted;
         if (!progressTracked && !wasAlreadyCompleted) {
              const moduleId = video.dataset.moduleId;
              if (moduleId) {
-                fetch('api/learning/track_progress.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ module_id: moduleId })
-                })
-                .then(res => res.json())
-                .then(data => { 
-                    if (data.success) {
-                        progressTracked = true;
-                        videoWatchingMode = false; // Module completed, allow full controls
-                        setupVideoControls(); // Update controls
-                        const hasQuiz = <?php echo json_encode(!empty($questions)); ?>;
-                        if (hasQuiz) {
-                            startQuiz();
-                        } else {
-                            noQuizAlert.classList.remove('hidden');
-                            setTimeout(() => location.reload(), 2000);
-                        }
-                    }
-                });
+                 fetch('api/learning/track_progress.php', {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json' },
+                     body: JSON.stringify({ module_id: moduleId })
+                 })
+                 .then(res => res.json())
+                 .then(data => { 
+                     if (data.success) {
+                         progressTracked = true;
+                         isModuleCompleted = true;
+                         setupVideoControls();
+                         
+                         const hasQuiz = <?php echo json_encode(!empty($questions)); ?>;
+
+                         const headerButtonsContainer = document.querySelector('.flex.justify-between.items-center.pb-4 .flex.items-center.space-x-4');
+                         if (headerButtonsContainer) {
+                             headerButtonsContainer.innerHTML = ''; 
+
+                             const nextStepUrl = '<?= $next_step_url ?>';
+                             const nextStepText = '<?= $next_step_text ?>';
+
+                             if (hasQuiz) {
+                                 const newBtn = document.createElement('button');
+                                 newBtn.id = 'header-take-quiz-btn';
+                                 newBtn.className = 'bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors text-sm';
+                                 newBtn.textContent = 'Take Quiz';
+                                 newBtn.addEventListener('click', startQuiz);
+                                 headerButtonsContainer.appendChild(newBtn);
+                                 headerTakeQuizBtn = newBtn;
+                             }
+
+                             const nextStepLink = document.createElement('a');
+                             nextStepLink.href = nextStepUrl;
+                             nextStepLink.className = 'text-primary hover:text-primary-dark transition-colors flex items-center text-sm font-semibold';
+                             nextStepLink.innerHTML = `
+                                 ${nextStepText}
+                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ml-1" viewBox="0 0 20 20" fill="currentColor">
+                                     <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                                 </svg>
+                             `;
+                             headerButtonsContainer.appendChild(nextStepLink);
+                         }
+
+                         if (hasQuiz) {
+                             showPreQuizModal();
+                         } else {
+                             noQuizAlert.classList.remove('hidden');
+                         }
+                     }
+                 });
              }
         } else {
             const hasQuiz = <?php echo json_encode(!empty($questions)); ?>;
             if (hasQuiz) {
-                startQuiz();
+                showPreQuizModal();
             } else {
                 noQuizAlert.classList.remove('hidden');
             }
@@ -385,84 +460,86 @@ document.addEventListener('DOMContentLoaded', function() {
         const modalTitle = document.getElementById('quiz-modal-title');
         const quizNavButtons = document.getElementById('quiz-nav-buttons');
         const quizResultButtons = document.getElementById('quiz-result-buttons');
+        const preQuizTakeBtn = document.getElementById('pre-quiz-take-quiz-btn');
+        const preQuizRewatchBtn = document.getElementById('pre-quiz-rewatch-btn');
+        const closePreQuizModalBtn = document.getElementById('close-pre-quiz-modal');
+        const closeQuizModalBtn = document.getElementById('close-quiz-modal-btn');
         let currentQuestion = 0;
 
-function showQuestion(index) {
-    const currentQuestions = modalBody.querySelectorAll('.question-slide'); // Get fresh references
-    currentQuestions.forEach((q, i) => q.classList.toggle('hidden', i !== index));
-    progressText.textContent = `Question ${index + 1} of ${currentQuestions.length}`;
-    prevBtn.style.display = index === 0 ? 'none' : 'inline-flex';
-    nextBtn.style.display = index === currentQuestions.length - 1 ? 'none' : 'inline-flex';
-    submitBtn.style.display = index === currentQuestions.length - 1 ? 'inline-flex' : 'none';
-}
+        function showQuestion(index) {
+            questions.forEach((q, i) => q.classList.toggle('hidden', i !== index));
+            progressText.textContent = `Question ${index + 1} of ${questions.length}`;
+            prevBtn.style.display = index === 0 ? 'none' : 'inline-flex';
+            nextBtn.style.display = index === questions.length - 1 ? 'none' : 'inline-flex';
+            submitBtn.style.display = index === questions.length - 1 ? 'inline-flex' : 'none';
+        }
 
-function resetQuizForm() {
-    // Reset the form
-    quizForm.reset();
-    
-    // Clear all radio button and checkbox selections in the entire modal
-    const allInputs = document.querySelectorAll('#quiz-modal input[type="radio"], #quiz-modal input[type="checkbox"]');
-    allInputs.forEach(input => {
-        input.checked = false;
-        input.removeAttribute('checked');
-    });
-    
-    // Reset visual state of labels
-    const allLabels = document.querySelectorAll('#quiz-modal label');
-    allLabels.forEach(label => {
-        label.classList.remove('bg-blue-50', 'border-blue-300', 'selected', 'bg-gray-50');
-        label.style.backgroundColor = '';
-        label.style.borderColor = '';
-    });
-}
+        function startQuiz() {
+            currentQuestion = 0;
+            modalTitle.textContent = 'Module Test';
+            
+            modalBody.innerHTML = '';
+            
+            questions.forEach(q => modalBody.appendChild(q));
+            
+            quizForm.reset();
 
-function startQuiz() {
-    currentQuestion = 0;
-    
-    // Reset modal content first
-    modalTitle.textContent = 'Module Test';
-    modalBody.innerHTML = '';
-    
-    // Re-add all question slides to modal body
-    questions.forEach(q => {
-        modalBody.appendChild(q.cloneNode(true)); // Use cloneNode to get fresh copies
-    });
-    
-    // Get fresh references to the newly added questions
-    const freshQuestions = modalBody.querySelectorAll('.question-slide');
-    
-    // Reset all form inputs in the fresh questions
-    resetQuizForm();
-    
-    // Setup modal state
-    quizNavButtons.style.display = 'flex';
-    quizResultButtons.style.display = 'none';
-    quizResultButtons.classList.add('hidden');
-    
-    // Show first question
-    freshQuestions.forEach((q, i) => q.classList.toggle('hidden', i !== 0));
-    progressText.textContent = `Question 1 of ${freshQuestions.length}`;
-    prevBtn.style.display = 'none';
-    nextBtn.style.display = freshQuestions.length > 1 ? 'inline-flex' : 'none';
-    submitBtn.style.display = freshQuestions.length === 1 ? 'inline-flex' : 'none';
-    
-    quizModal.classList.remove('hidden');
-}
+            quizNavButtons.style.display = 'flex';
+            quizResultButtons.style.display = 'none';
+            quizResultButtons.classList.add('hidden');
+            showQuestion(0);
+            quizModal.classList.remove('hidden');
+        }
 
-nextBtn.addEventListener('click', () => {
-    const currentQuestions = modalBody.querySelectorAll('.question-slide');
-    if (currentQuestion < currentQuestions.length - 1) {
-        currentQuestion++;
-        showQuestion(currentQuestion);
-    }
-});
+        function showPreQuizModal() {
+            preQuizTakeBtn.textContent = hasTakenQuiz ? 'Re-take Quiz' : 'Take Quiz';
+            preQuizModal.classList.remove('hidden');
+        }
 
-prevBtn.addEventListener('click', () => {
-    if (currentQuestion > 0) {
-        currentQuestion--;
-        showQuestion(currentQuestion);
-    }
-});
+        if (headerTakeQuizBtn) {
+            headerTakeQuizBtn.addEventListener('click', () => {
+                const hasQuiz = <?php echo json_encode(!empty($questions)); ?>;
+                if (hasQuiz) {
+                    startQuiz();
+                }
+            });
+        }
+
+        preQuizTakeBtn.addEventListener('click', () => {
+            preQuizModal.classList.add('hidden');
+            startQuiz();
+        });
+
+        preQuizRewatchBtn.addEventListener('click', () => {
+            preQuizModal.classList.add('hidden');
+            video.currentTime = 0;
+            video.play();
+        });
+        
+        closePreQuizModalBtn.addEventListener('click', () => {
+            preQuizModal.classList.add('hidden');
+        });
+
+        if (closeQuizModalBtn) {
+            closeQuizModalBtn.addEventListener('click', () => {
+                quizModal.classList.add('hidden');
+            });
+        }
+
+        nextBtn.addEventListener('click', () => {
+            if (currentQuestion < questions.length - 1) {
+                currentQuestion++;
+                showQuestion(currentQuestion);
+            }
+        });
+
+        prevBtn.addEventListener('click', () => {
+            if (currentQuestion > 0) {
+                currentQuestion--;
+                showQuestion(currentQuestion);
+            }
+        });
+
         quizForm.addEventListener('submit', function(event) {
             event.preventDefault();
             const formData = new FormData(this);
@@ -474,6 +551,12 @@ prevBtn.addEventListener('click', () => {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
+                    hasTakenQuiz = true; 
+                    
+                    if (headerTakeQuizBtn) {
+                        headerTakeQuizBtn.textContent = 'Re-take Quiz';
+                    }
+
                     modalTitle.textContent = 'Result';
                     modalBody.innerHTML = `
                         <div class="text-center p-8">
@@ -494,26 +577,12 @@ prevBtn.addEventListener('click', () => {
             });
         });
 
-        // Fixed Re-take Quiz button
-        document.getElementById('retake-btn').addEventListener('click', function() {
-            startQuiz(); // This now properly resets all quiz answers
-        });
-
-        // Fixed Re-watch Video button  
-        document.getElementById('rewatch-btn').addEventListener('click', function() {
-            // Clear quiz answers from server
-            const formData = new FormData();
-            formData.append('action', 'clear_answers');
-            formData.append('module_id', '<?= $module_id ?>');
-            
-            fetch('api/learning/submit_quiz.php', { method: 'POST', body: formData })
-                .then(() => {
-                    // Close modal and enable full video controls for re-watching
-                    quizModal.classList.add('hidden');
-                    videoWatchingMode = false; // Allow seeking for re-watching
-                    setupVideoControls(); // Update controls to allow seeking
-                    video.currentTime = 0; // Reset video to beginning
-                });
+        document.getElementById('retake-btn').addEventListener('click', startQuiz);
+        
+        document.getElementById('rewatch-btn').addEventListener('click', () => {
+            quizModal.classList.add('hidden');
+            video.currentTime = 0;
+            video.play();
         });
     }
 });
