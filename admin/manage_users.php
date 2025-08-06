@@ -12,37 +12,100 @@ $filter_dept = isset($_GET['department']) && $_GET['department'] !== '' ? (int)$
 $filter_status = isset($_GET['status']) && in_array($_GET['status'], ['active', 'inactive', 'locked']) ? $_GET['status'] : null;
 $search_term = isset($_GET['search']) && trim($_GET['search']) !== '' ? trim($_GET['search']) : null;
 
+// Initialize variables to prevent undefined variable warnings
+$total_records = 0;
+$total_pages = 0;
+$normal_users = [];
+$admin_users = [];
+$departments = [];
+$total_modules = 1;
+
 try {
+    // Get total number of modules for progress calculation
     $total_modules_stmt = $pdo->query("SELECT COUNT(*) FROM modules");
     $total_modules = $total_modules_stmt->fetchColumn();
-    $total_modules = $total_modules > 0 ? $total_modules : 1;
+    $total_modules = $total_modules > 0 ? $total_modules : 1; // Avoid division by zero
 
+    // --- Build the WHERE clause for filtering normal users ---
     $where_clauses = ["u.role = 'user'"];
     $params = [];
 
+    // FIXED SEARCH LOGIC - Completely rewritten for reliability
     if ($search_term) {
-        $where_clauses[] = "(u.first_name LIKE :search OR u.last_name LIKE :search OR u.username LIKE :search OR u.staff_id LIKE :search)";
-        $params[':search'] = "%{$search_term}%";
+        $clean_search_term = trim($search_term);
+        
+        if (strlen($clean_search_term) >= 1) { // Allow even single character searches
+            // Create a comprehensive search that covers all possible scenarios
+            $search_sql = "(
+                u.first_name LIKE :search1 OR 
+                u.last_name LIKE :search2 OR 
+                CONCAT(u.first_name, ' ', u.last_name) LIKE :search3 OR
+                u.username LIKE :search4 OR 
+                u.staff_id LIKE :search5
+            )";
+            
+            $where_clauses[] = $search_sql;
+            
+            // Bind the same search term to multiple parameters
+            $search_value = "%{$clean_search_term}%";
+            $params[':search1'] = $search_value;
+            $params[':search2'] = $search_value;
+            $params[':search3'] = $search_value;
+            $params[':search4'] = $search_value;
+            $params[':search5'] = $search_value;
+            
+            // Debug logging
+            error_log("Search term: '{$clean_search_term}'");
+            error_log("Search value: '{$search_value}'");
+        }
     }
 
+    // Add department filter
     if ($filter_dept) {
         $where_clauses[] = "u.department_id = :dept_id";
         $params[':dept_id'] = $filter_dept;
     }
+    
+    // Add status filter
     if ($filter_status) {
         $where_clauses[] = "u.status = :status";
         $params[':status'] = $filter_status;
     }
+    
     $where_sql = "WHERE " . implode(' AND ', $where_clauses);
+    
+    // Debug the final query
+    error_log("Final WHERE SQL: " . $where_sql);
+    error_log("Final parameters: " . print_r($params, true));
 
+    // --- Get total records for pagination ---
     $total_records_sql = "SELECT COUNT(*) FROM users u " . $where_sql;
     $total_records_stmt = $pdo->prepare($total_records_sql);
-    $total_records_stmt->execute($params);
+    
+    // Execute with parameters
+    foreach ($params as $key => $value) {
+        $total_records_stmt->bindValue($key, $value, PDO::PARAM_STR);
+    }
+    
+    $total_records_stmt->execute();
     $total_records = $total_records_stmt->fetchColumn();
     $total_pages = ceil($total_records / $records_per_page);
 
+    // Debug total records
+    error_log("Total records found: " . $total_records);
+
+    // --- Fetch paginated and filtered normal users ---
     $sql_users = "SELECT 
-                    u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name, 
+                u.id, 
+                CONCAT(u.first_name, ' ', u.last_name) as fullname, 
+                u.username, 
+                u.staff_id, 
+                u.position, 
+                u.phone_number, 
+                u.gender, 
+                u.role, 
+                u.status, 
+                d.name as department_name, 
                     (
                         SELECT COUNT(DISTINCT up.module_id)
                         FROM user_progress up
@@ -62,32 +125,55 @@ try {
                   {$where_sql}
                   ORDER BY u.first_name, u.last_name
                   LIMIT :limit OFFSET :offset";
-                  
+                      
     $stmt_users = $pdo->prepare($sql_users);
-    foreach ($params as $key => &$val) {
-        $stmt_users->bindParam($key, $val);
+
+    // Bind dynamic filter parameters
+    foreach ($params as $key => $val) {
+        $stmt_users->bindValue($key, $val, PDO::PARAM_STR);
     }
+    
+    // Bind pagination parameters
     $stmt_users->bindValue(':limit', $records_per_page, PDO::PARAM_INT);
     $stmt_users->bindValue(':offset', $offset, PDO::PARAM_INT);
+    
     $stmt_users->execute();
     $normal_users = $stmt_users->fetchAll();
 
-    $sql_admins = "SELECT u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name 
-                   FROM users u 
-                   LEFT JOIN departments d ON u.department_id = d.id
-                   WHERE u.role = 'admin'
-                   ORDER BY u.first_name, u.last_name";
+    // Debug results
+    error_log("Number of users returned: " . count($normal_users));
+
+    // --- Fetch all admin users (no pagination/filters for this list) ---
+    $sql_admins = "SELECT 
+              u.id, 
+              CONCAT(u.first_name, ' ', u.last_name) as fullname, 
+              u.username, 
+              u.staff_id, 
+              u.position, 
+              u.phone_number, 
+              u.gender, 
+              u.role, 
+              u.status, 
+              d.name as department_name
+                  FROM users u 
+                  LEFT JOIN departments d ON u.department_id = d.id
+                  WHERE u.role = 'admin'
+                  ORDER BY u.first_name, u.last_name";
     $stmt_admins = $pdo->query($sql_admins);
     $admin_users = $stmt_admins->fetchAll();
     
+    // Fetch all departments for filter dropdown
     $departments = $pdo->query("SELECT id, name FROM departments ORDER BY name ASC")->fetchAll();
 
 } catch (PDOException $e) {
     error_log("Manage Users Error: " . $e->getMessage());
+    // Ensure variables have safe defaults on error
     $normal_users = [];
     $admin_users = [];
     $departments = [];
     $total_pages = 0;
+    $total_records = 0;
+    $total_modules = 1;
 }
 
 require_once 'includes/header.php';
@@ -111,11 +197,29 @@ require_once 'includes/header.php';
 
     <!-- Filter Form -->
     <div class="bg-white p-4 rounded-lg shadow-md mb-6">
-        <form method="GET" action="manage_users.php" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
+        <form method="GET" action="manage_users.php" class="grid grid-cols-1 md:grid-cols-4 gap-4" id="filter-form">
+            <div class="relative">
                 <label for="search" class="block text-sm font-medium text-gray-700">Search User</label>
-                <input type="text" name="search" id="search" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500" placeholder="Name, Staff ID..." value="<?= htmlspecialchars($search_term ?? '') ?>">
+                <input type="text" 
+                       name="search" 
+                       id="search" 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 pr-10" 
+                       placeholder="Name, Staff ID, Username..." 
+                       value="<?= htmlspecialchars($search_term ?? '') ?>">
+                
+                <!-- Clear Search Button -->
+                <?php if ($search_term): ?>
+                <button type="button" 
+                        id="clear-search" 
+                        class="absolute inset-y-0 right-0 top-6 pr-3 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                        title="Clear search">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+                <?php endif; ?>
             </div>
+            
             <div>
                 <label for="department" class="block text-sm font-medium text-gray-700">Filter by Department</label>
                 <select name="department" id="department" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
@@ -127,6 +231,7 @@ require_once 'includes/header.php';
                     <?php endforeach; ?>
                 </select>
             </div>
+            
             <div>
                 <label for="filter_status" class="block text-sm font-medium text-gray-700">Filter by Status</label>
                 <select name="status" id="filter_status" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
@@ -136,11 +241,95 @@ require_once 'includes/header.php';
                     <option value="locked" <?= ($filter_status === 'locked') ? 'selected' : '' ?>>Locked</option>
                 </select>
             </div>
-            <div class="flex items-end">
-                <button type="submit" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors w-full md:w-auto">Filter</button>
+            
+            <div class="flex items-end space-x-2">
+                <button type="submit" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors flex-1 md:flex-none">
+                    <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    Filter
+                </button>
+                
+                <?php if ($search_term || $filter_dept || $filter_status): ?>
+                <button type="button" 
+                        id="clear-all-filters" 
+                        class="bg-gray-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-gray-600 transition-colors">
+                    <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    Clear
+                </button>
+                <?php endif; ?>
             </div>
         </form>
+        
+        <!-- Search Results Info -->
+        <?php if ($search_term || $filter_dept || $filter_status): ?>
+        <div class="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+            <div class="flex items-center justify-between">
+                <div class="text-sm text-blue-800">
+                    <span class="font-medium">Search Results:</span> 
+                    Found <?= number_format($total_records) ?> user<?= $total_records !== 1 ? 's' : '' ?>
+                    <?php if ($search_term): ?>
+                        matching "<?= htmlspecialchars($search_term) ?>"
+                    <?php endif; ?>
+                    <?php if ($filter_dept): ?>
+                        <?php 
+                        $dept_name = 'Unknown Department';
+                        foreach ($departments as $dept) {
+                            if ($dept['id'] == $filter_dept) {
+                                $dept_name = $dept['name'];
+                                break;
+                            }
+                        }
+                        ?>
+                        in <?= htmlspecialchars($dept_name) ?>
+                    <?php endif; ?>
+                    <?php if ($filter_status): ?>
+                        with status "<?= htmlspecialchars($filter_status) ?>"
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
+
+    <!-- Test Query Section (Remove after debugging) -->
+    <?php if (isset($_GET['debug']) && $_GET['debug'] == '1'): ?>
+    <div class="bg-yellow-50 p-4 rounded-lg mb-6 border border-yellow-200">
+        <h4 class="font-medium text-yellow-800 mb-2">Debug Information:</h4>
+        <div class="text-sm text-yellow-700 space-y-2">
+            <p><strong>Search Term:</strong> "<?= htmlspecialchars($search_term ?? 'None') ?>"</p>
+            <p><strong>Total Records Found:</strong> <?= $total_records ?></p>
+            <p><strong>SQL WHERE:</strong> <?= htmlspecialchars($where_sql) ?></p>
+            <p><strong>Parameters:</strong> <?= htmlspecialchars(json_encode($params)) ?></p>
+            
+            <!-- Test direct query -->
+            <?php if ($search_term): ?>
+                <?php
+                $test_sql = "SELECT id, CONCAT(first_name, ' ', last_name) as fullname, username, staff_id 
+                            FROM users 
+                            WHERE role = 'user' 
+                            AND (first_name LIKE :test OR last_name LIKE :test OR CONCAT(first_name, ' ', last_name) LIKE :test)
+                            LIMIT 5";
+                $test_stmt = $pdo->prepare($test_sql);
+                $test_stmt->bindValue(':test', "%{$search_term}%");
+                $test_stmt->execute();
+                $test_results = $test_stmt->fetchAll();
+                ?>
+                <p><strong>Direct Test Query Results:</strong></p>
+                <ul class="ml-4">
+                    <?php foreach ($test_results as $test_user): ?>
+                        <li>ID: <?= $test_user['id'] ?> - <?= htmlspecialchars($test_user['fullname']) ?> (<?= htmlspecialchars($test_user['staff_id']) ?>)</li>
+                    <?php endforeach; ?>
+                    <?php if (empty($test_results)): ?>
+                        <li>No results found in test query</li>
+                    <?php endif; ?>
+                </ul>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <!-- Normal Users Table -->
     <h3 class="text-xl font-semibold text-gray-800 mb-4">Normal Users</h3>
@@ -163,13 +352,23 @@ require_once 'includes/header.php';
             </thead>
             <tbody>
                 <?php if (empty($normal_users)): ?>
-                    <tr><td colspan="11" class="text-center py-10 text-gray-500">No users found.</td></tr>
+                    <tr><td colspan="11" class="text-center py-10 text-gray-500">
+                        <?php if ($search_term || $filter_dept || $filter_status): ?>
+                            No users found matching your search criteria.
+                            <br>
+                            <button onclick="clearAllFilters()" class="mt-2 text-blue-600 hover:text-blue-800 underline">
+                                Clear all filters
+                            </button>
+                        <?php else: ?>
+                            No users found.
+                        <?php endif; ?>
+                    </td></tr>
                 <?php else: ?>
                     <?php foreach ($normal_users as $index => $user): ?>
                         <?php $progress_percentage = $total_modules > 0 ? round(($user['completed_modules'] / $total_modules) * 100) : 0; ?>
-                        <tr id="user-row-<?= $user['id'] ?>">
+                        <tr id="user-row-<?= $user['id'] ?>" class="hover:bg-gray-50 transition-colors">
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= $offset + $index + 1 ?></td>
-                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm font-semibold"><?= htmlspecialchars($user['first_name'] . ' ' . $user['last_name']) ?></td>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm font-semibold"><?= htmlspecialchars($user['fullname']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['staff_id']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['username']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['gender'] ?? 'N/A') ?></td>
@@ -195,8 +394,10 @@ require_once 'includes/header.php';
                                     <button onclick="unlockUser(<?= $user['id'] ?>)" class="text-green-600 hover:text-green-900 mr-3">Unlock</button>
                                 <?php endif; ?>
                                 <button onclick="editUser(<?= $user['id'] ?>)" class="text-indigo-600 hover:text-indigo-900 mr-3">Edit</button>
-                                <button onclick="resetPassword(<?= $user['id'] ?>)" class="text-yellow-600 hover:text-yellow-900 mr-3">Reset Pass</button>
-                                <button onclick="deleteUser(<?= $user['id'] ?>)" class="text-red-600 hover:text-red-900">Delete</button>
+                                <?php if ($user['id'] != $_SESSION['user_id']): ?>
+                                    <button onclick="resetPassword(<?= $user['id'] ?>)" class="text-yellow-600 hover:text-yellow-900 mr-3">Reset Pass</button>
+                                    <button onclick="deleteUser(<?= $user['id'] ?>)" class="text-red-600 hover:text-red-900">Delete</button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -257,9 +458,9 @@ require_once 'includes/header.php';
                     <tr><td colspan="10" class="text-center py-10 text-gray-500">No administrators found.</td></tr>
                 <?php else: ?>
                     <?php foreach ($admin_users as $index => $user): ?>
-                        <tr id="user-row-<?= $user['id'] ?>">
+                        <tr id="user-row-<?= $user['id'] ?>" class="hover:bg-gray-50 transition-colors">
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= $index + 1 ?></td>
-                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm font-semibold"><?= htmlspecialchars($user['first_name'] . ' ' . $user['last_name']) ?></td>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm font-semibold"><?= htmlspecialchars($user['fullname']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['staff_id']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['username']) ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= htmlspecialchars($user['gender'] ?? 'N/A') ?></td>
@@ -294,7 +495,15 @@ require_once 'includes/header.php';
         <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
             <form id="user-form">
                 <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-                    <h3 class="text-lg leading-6 font-medium text-gray-900" id="user-modal-title">Add New User</h3>
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900" id="user-modal-title">Add New User</h3>
+                        <button type="button" id="close-user-modal" class="text-gray-400 hover:text-gray-600 transition-colors">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    
                     <div class="mt-4 space-y-4">
                         <input type="hidden" name="user_id" id="user_id">
                         <input type="hidden" name="action" id="user-form-action">
@@ -362,10 +571,14 @@ require_once 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                <div id="user-form-feedback" class="px-6 py-2 text-sm text-red-600"></div>
+                <div id="user-form-feedback" class="px-6 py-2 text-sm text-red-600 hidden"></div>
                 <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                    <button type="submit" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700">Save</button>
-                    <button type="button" id="user-cancel-btn" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:mt-0 sm:ml-3 sm:w-auto">Cancel</button>
+                    <button type="submit" id="user-form-submit" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm">
+                        Save User
+                    </button>
+                    <button type="button" id="cancel-user-modal" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+                        Cancel
+                    </button>
                 </div>
             </form>
         </div>
@@ -376,229 +589,366 @@ require_once 'includes/header.php';
 <div id="bulk-upload-modal" class="fixed z-50 inset-0 overflow-y-auto hidden">
     <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
         <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"></div>
-        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
-            <form id="bulk-upload-form" enctype="multipart/form-data">
-                <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full">
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div class="flex items-center justify-between mb-4">
                     <h3 class="text-lg leading-6 font-medium text-gray-900">Bulk Upload Users</h3>
-                    <div class="mt-4">
-                        <label for="user_file" class="block text-sm font-medium text-gray-700">Upload CSV or Excel File</label>
-                        <input type="file" name="user_file" id="user_file" required accept=".csv, .xlsx" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
-                        <p class="text-xs text-gray-500 mt-2">
-                            File must be a CSV with columns: `staff_id`, `first_name`, `last_name`, `gender`, `position`, `department_name`, `phone_number`. <br>
-                            <a href="../templates/question_template.csv" class="text-blue-600 hover:underline" download>Download Template</a>
-                        </p>
+                    <button type="button" id="close-bulk-upload-modal" class="text-gray-400 hover:text-gray-600 transition-colors">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <div class="space-y-4">
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h4 class="font-medium text-blue-900 mb-2">Instructions:</h4>
+                        <ul class="text-sm text-blue-800 space-y-1">
+                            <li>• Upload a CSV file with the following columns: first_name, last_name, staff_id, position, gender, department_name, phone_number</li>
+                            <li>• Department name should match existing departments in the system</li>
+                            <li>• Gender should be: Male, Female, or Other</li>
+                            <li>• Default password will be set to: APD@123456789</li>
+                            <li>• Username will be auto-generated as: firstname.lastname</li>
+                        </ul>
+                        <div class="mt-3">
+                            <a href="download_user_template.php" class="inline-flex items-center text-blue-600 hover:text-blue-800 underline">
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                                Download CSV Template
+                            </a>
+                        </div>
                     </div>
+                    
+                    <form id="bulk-upload-form" enctype="multipart/form-data">
+                        <div>
+                            <label for="csv_file" class="block text-sm font-medium text-gray-700">Choose CSV or XLSX File</label>
+                            <input type="file" name="csv_file" id="csv_file" accept=".csv,.xlsx" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                        
+                        <div id="bulk-upload-feedback" class="mt-4 text-sm hidden"></div>
+                        
+                        <div class="mt-6 flex justify-end space-x-3">
+                            <button type="button" id="cancel-bulk-upload" class="inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                Cancel
+                            </button>
+                            <button type="submit" id="bulk-upload-submit" class="inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                                Upload Users
+                            </button>
+                        </div>
+                    </form>
                 </div>
-                <div id="bulk-form-feedback" class="px-6 py-2 text-sm"></div>
-                <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                    <button type="submit" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700">Upload and Create Users</button>
-                    <button type="button" id="bulk-cancel-btn" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:mt-0 sm:ml-3 sm:w-auto">Cancel</button>
-                </div>
-            </form>
+            </div>
         </div>
     </div>
 </div>
 
+<!-- Delete All Users Confirmation Modal -->
+<div id="delete-all-modal" class="fixed z-50 inset-0 overflow-y-auto hidden">
+    <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"></div>
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div class="sm:flex sm:items-start">
+                    <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                        <svg class="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16c-.77.833.192 2.5 1.732 2.5z"/>
+                        </svg>
+                    </div>
+                    <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900">Delete All Users</h3>
+                        <div class="mt-2">
+                            <p class="text-sm text-gray-500">
+                                Are you sure you want to delete ALL users? This action cannot be undone and will remove all user accounts, progress, and associated data.
+                            </p>
+                            <div class="mt-3 p-3 bg-red-50 rounded-lg border border-red-200">
+                                <p class="text-sm text-red-800 font-medium">⚠️ Warning: This will delete all user data permanently!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <button type="button" id="confirm-delete-all" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm">
+                    Delete All Users
+                </button>
+                <button type="button" id="cancel-delete-all" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // --- Modal Handling ---
+    // Modal elements
     const userModal = document.getElementById('user-modal');
-    const bulkModal = document.getElementById('bulk-upload-modal');
+    const bulkUploadModal = document.getElementById('bulk-upload-modal');
+    const deleteAllModal = document.getElementById('delete-all-modal');
+    const userForm = document.getElementById('user-form');
+    const bulkUploadForm = document.getElementById('bulk-upload-form');
+
+    // Button elements
     const addUserBtn = document.getElementById('add-user-btn');
     const bulkUploadBtn = document.getElementById('bulk-upload-btn');
-    const userCancelBtn = document.getElementById('user-cancel-btn');
-    const bulkCancelBtn = document.getElementById('bulk-cancel-btn');
-    const userForm = document.getElementById('user-form');
-    const bulkForm = document.getElementById('bulk-upload-form');
     const deleteAllBtn = document.getElementById('delete-all-btn');
+    const clearSearchBtn = document.getElementById('clear-search');
+    const clearAllFiltersBtn = document.getElementById('clear-all-filters');
 
-    if (addUserBtn) {
-        addUserBtn.addEventListener('click', () => {
-            userForm.reset();
-            document.getElementById('user-modal-title').textContent = 'Add New User';
-            document.getElementById('user-form-action').value = 'add';
-            document.getElementById('password').placeholder = 'Default Password (APD@123456789)';
-            userModal.classList.remove('hidden');
-        });
-    }
+    // Modal close buttons
+    const closeUserModal = document.getElementById('close-user-modal');
+    const cancelUserModal = document.getElementById('cancel-user-modal');
+    const closeBulkUploadModal = document.getElementById('close-bulk-upload-modal');
+    const cancelBulkUpload = document.getElementById('cancel-bulk-upload');
+    const cancelDeleteAll = document.getElementById('cancel-delete-all');
+    const confirmDeleteAll = document.getElementById('confirm-delete-all');
 
-    if (bulkUploadBtn) {
-        bulkUploadBtn.addEventListener('click', () => {
-            if (bulkForm) bulkForm.reset();
-            bulkModal.classList.remove('hidden');
-        });
-    }
+    // Show modals
+    addUserBtn?.addEventListener('click', () => {
+        document.getElementById('user-modal-title').textContent = 'Add New User';
+        document.getElementById('user-form-action').value = 'add';
+        document.getElementById('user-form-submit').textContent = 'Add User';
+        userForm.reset();
+        document.getElementById('user_id').value = '';
+        showModal(userModal);
+    });
 
-    if (deleteAllBtn) {
-        deleteAllBtn.addEventListener('click', deleteAllUsers);
-    }
-    
-    if (userCancelBtn) {
-        userCancelBtn.addEventListener('click', () => userModal.classList.add('hidden'));
-    }
+    bulkUploadBtn?.addEventListener('click', () => {
+        showModal(bulkUploadModal);
+    });
 
-    if (bulkCancelBtn) {
-        bulkCancelBtn.addEventListener('click', () => bulkModal.classList.add('hidden'));
-    }
+    deleteAllBtn?.addEventListener('click', () => {
+        showModal(deleteAllModal);
+    });
 
-    if (userForm) {
-        userForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            const formData = new FormData(this);
-            const feedbackDiv = document.getElementById('user-form-feedback');
+    // Close modals
+    [closeUserModal, cancelUserModal].forEach(btn => {
+        btn?.addEventListener('click', () => hideModal(userModal));
+    });
+
+    [closeBulkUploadModal, cancelBulkUpload].forEach(btn => {
+        btn?.addEventListener('click', () => hideModal(bulkUploadModal));
+    });
+
+    cancelDeleteAll?.addEventListener('click', () => hideModal(deleteAllModal));
+
+    // Clear search functionality
+    clearSearchBtn?.addEventListener('click', () => {
+        document.getElementById('search').value = '';
+        document.getElementById('filter-form').submit();
+    });
+
+    // Clear all filters
+    clearAllFiltersBtn?.addEventListener('click', clearAllFilters);
+
+    // User form submission
+    userForm?.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        
+        // Set the correct action based on form state
+        const action = document.getElementById('user-form-action').value;
+        if (action === 'add') {
+            formData.set('action', 'add');
+        } else if (action === 'edit') {
+            formData.set('action', 'update');
+        }
+        
+        try {
+            const response = await fetch('crud_user.php', {
+                method: 'POST',
+                body: formData
+            });
             
-            fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        userModal.classList.add('hidden');
-                        location.reload();
-                    } else {
-                        feedbackDiv.textContent = data.message;
-                    }
-                });
-        });
+            const result = await response.json();
+            
+            if (result.success) {
+                hideModal(userModal);
+                location.reload(); // Refresh to show updated data
+            } else {
+                showFeedback('user-form-feedback', result.message, 'error');
+            }
+        } catch (error) {
+            showFeedback('user-form-feedback', 'An error occurred. Please try again.', 'error');
+        }
+    });
+
+    // Bulk upload form submission
+    bulkUploadForm?.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        
+        // Change the file input name to match what crud_user.php expects
+        const fileInput = document.getElementById('csv_file');
+        if (fileInput.files.length > 0) {
+            formData.delete('csv_file');
+            formData.append('user_file', fileInput.files[0]);
+        }
+        formData.append('action', 'bulk_upload');
+        
+        const submitBtn = document.getElementById('bulk-upload-submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Uploading...';
+        
+        try {
+            const response = await fetch('crud_user.php', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                showFeedback('bulk-upload-feedback', result.message, 'success');
+                if (result.failed_entries && result.failed_entries.length > 0) {
+                    showFeedback('bulk-upload-feedback', result.message + '<br><br>Failed entries:<br>' + result.failed_entries.join('<br>'), 'error');
+                }
+                setTimeout(() => {
+                    hideModal(bulkUploadModal);
+                    location.reload();
+                }, 3000);
+            } else {
+                showFeedback('bulk-upload-feedback', result.message, 'error');
+            }
+        } catch (error) {
+            showFeedback('bulk-upload-feedback', 'An error occurred during upload.', 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Upload Users';
+        }
+    });
+
+    // Delete all users confirmation
+    confirmDeleteAll?.addEventListener('click', async function() {
+        try {
+            const response = await fetch('crud_user.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'action=delete_all_normal_users'
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                hideModal(deleteAllModal);
+                location.reload();
+            } else {
+                alert(result.message);
+            }
+        } catch (error) {
+            alert('An error occurred. Please try again.');
+        }
+    });
+
+    // Utility functions
+    function showModal(modal) {
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
     }
 
-    if (bulkForm) {
-        bulkForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            const formData = new FormData(this);
-            formData.append('action', 'bulk_upload');
-            const feedbackDiv = document.getElementById('bulk-form-feedback');
-            feedbackDiv.textContent = 'Uploading, please wait...';
-            feedbackDiv.className = 'px-6 py-2 text-sm text-blue-600';
+    function hideModal(modal) {
+        modal.classList.add('hidden');
+        document.body.style.overflow = '';
+    }
 
-            fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        let feedbackHTML = `<p>${data.message}</p>`;
-                        
-                        if (data.failed_entries && data.failed_entries.length > 0) {
-                            feedbackHTML += '<p class="mt-2 font-semibold text-left">Failure Details:</p>';
-                            feedbackHTML += '<ul class="list-disc list-inside text-left max-h-40 overflow-y-auto border rounded-md p-2 bg-red-50">';
-                            data.failed_entries.forEach(error => {
-                                feedbackHTML += `<li><small>${error}</small></li>`;
-                            });
-                            feedbackHTML += '</ul>';
-                            feedbackDiv.className = 'px-6 py-2 text-sm text-red-600 text-center';
-                        } else {
-                            feedbackDiv.className = 'px-6 py-2 text-sm text-green-600';
-                            setTimeout(() => location.reload(), 2000);
-                        }
-
-                        feedbackDiv.innerHTML = feedbackHTML;
-                    } else {
-                        feedbackDiv.textContent = 'Error: ' + data.message;
-                        feedbackDiv.className = 'px-6 py-2 text-sm text-red-600';
-                    }
-                });
-        });
+    function showFeedback(elementId, message, type) {
+        const element = document.getElementById(elementId);
+        element.innerHTML = message;
+        element.className = `px-6 py-2 text-sm ${type === 'error' ? 'text-red-600' : 'text-green-600'}`;
+        element.classList.remove('hidden');
     }
 });
 
-// --- CRUD Functions (must be in global scope) ---
-function editUser(id) {
-    const userForm = document.getElementById('user-form');
-    const userModal = document.getElementById('user-modal');
-    
-    fetch(`../api/admin/user_crud.php?action=get&id=${id}`)
-        .then(res => res.json())
+// Global functions for user actions
+function editUser(userId) {
+    // Fetch user data and populate form
+    fetch(`crud_user.php?action=get&id=${userId}`)
+        .then(response => response.json())
         .then(data => {
             if (data.success) {
-                userForm.reset();
+                const user = data.user;
                 document.getElementById('user-modal-title').textContent = 'Edit User';
-                document.getElementById('user-form-action').value = 'update';
-                document.getElementById('user_id').value = data.user.id;
-                document.getElementById('first_name').value = data.user.first_name;
-                document.getElementById('last_name').value = data.user.last_name;
-                document.getElementById('staff_id').value = data.user.staff_id;
-                document.getElementById('position').value = data.user.position;
-                document.getElementById('phone_number').value = data.user.phone_number;
-                document.getElementById('gender').value = data.user.gender;
-                document.getElementById('department_id').value = data.user.department_id;
-                document.getElementById('role').value = data.user.role;
-                document.getElementById('user_status').value = data.user.status;
-                document.getElementById('password').placeholder = 'New Password (leave blank to keep current)';
-                userModal.classList.remove('hidden');
-            } else {
-                alert('Error: ' + data.message);
+                document.getElementById('user-form-action').value = 'edit';
+                document.getElementById('user-form-submit').textContent = 'Update User';
+                document.getElementById('user_id').value = user.id;
+                document.getElementById('first_name').value = user.first_name;
+                document.getElementById('last_name').value = user.last_name;
+                document.getElementById('staff_id').value = user.staff_id;
+                document.getElementById('position').value = user.position || '';
+                document.getElementById('gender').value = user.gender || '';
+                document.getElementById('department_id').value = user.department_id;
+                document.getElementById('phone_number').value = user.phone_number || '';
+                document.getElementById('role').value = user.role;
+                document.getElementById('user_status').value = user.status;
+                
+                document.getElementById('user-modal').classList.remove('hidden');
+                document.body.style.overflow = 'hidden';
             }
         });
 }
 
-function deleteUser(id) {
+function deleteUser(userId) {
     if (confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
-        const formData = new FormData();
-        formData.append('action', 'delete');
-        formData.append('user_id', id);
-        fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    alert('User deleted successfully.');
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            });
+        fetch('crud_user.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `action=delete&user_id=${userId}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById(`user-row-${userId}`).remove();
+            } else {
+                alert(data.message);
+            }
+        });
     }
 }
 
-function deleteAllUsers() {
-    if (confirm('ARE YOU ABSOLUTELY SURE?\n\nThis will permanently delete all normal users and their associated progress. This action cannot be undone.')) {
-        const formData = new FormData();
-        formData.append('action', 'delete_all_normal_users');
-        fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    alert(data.message);
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            });
+function resetPassword(userId) {
+    if (confirm('Are you sure you want to reset this user\'s password to the default?')) {
+        fetch('crud_user.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `action=reset_password&user_id=${userId}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert(data.message);
+        });
     }
 }
 
-function resetPassword(id) {
-    if (confirm('Are you sure you want to reset this user\'s password? They will be forced to create a new one on their next login.')) {
-        const formData = new FormData();
-        formData.append('action', 'reset_password');
-        formData.append('user_id', id);
-        fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    alert(data.message);
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            });
+function unlockUser(userId) {
+    if (confirm('Are you sure you want to unlock this user?')) {
+        fetch('crud_user.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `action=unlock&user_id=${userId}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert(data.message);
+            }
+        });
     }
 }
 
-function unlockUser(id) {
-    if (confirm('Are you sure you want to unlock this user\'s account?')) {
-        const formData = new FormData();
-        formData.append('action', 'unlock');
-        formData.append('user_id', id);
-        fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    alert('User account unlocked successfully.');
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            });
-    }
+function clearAllFilters() {
+    window.location.href = 'manage_users.php';
 }
 </script>
 
-<?php require_once 'includes/footer.php';
+<?php require_once 'includes/footer.php'; ?>
