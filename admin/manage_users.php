@@ -10,6 +10,7 @@ $offset = ($current_page - 1) * $records_per_page;
 
 $filter_dept = isset($_GET['department']) && $_GET['department'] !== '' ? (int)$_GET['department'] : null;
 $filter_status = isset($_GET['status']) && in_array($_GET['status'], ['active', 'inactive', 'locked']) ? $_GET['status'] : null;
+$search_term = isset($_GET['search']) && trim($_GET['search']) !== '' ? trim($_GET['search']) : null;
 
 try {
     $total_modules_stmt = $pdo->query("SELECT COUNT(*) FROM modules");
@@ -18,6 +19,11 @@ try {
 
     $where_clauses = ["u.role = 'user'"];
     $params = [];
+
+    if ($search_term) {
+        $where_clauses[] = "(u.first_name LIKE :search OR u.last_name LIKE :search OR u.username LIKE :search OR u.staff_id LIKE :search)";
+        $params[':search'] = "%{$search_term}%";
+    }
 
     if ($filter_dept) {
         $where_clauses[] = "u.department_id = :dept_id";
@@ -35,18 +41,14 @@ try {
     $total_records = $total_records_stmt->fetchColumn();
     $total_pages = ceil($total_records / $records_per_page);
 
-    // --- FIX: Updated the subquery to correctly calculate module completion ---
-    // A module is now only considered complete if the video is watched AND the quiz is taken (if a quiz exists).
     $sql_users = "SELECT 
                     u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name, 
                     (
                         SELECT COUNT(DISTINCT up.module_id)
                         FROM user_progress up
                         WHERE up.user_id = u.id AND (
-                            -- Condition 1: The module has no quiz, so watching the video is enough.
                             (SELECT COUNT(*) FROM questions q WHERE q.module_id = up.module_id) = 0
                             OR
-                            -- Condition 2: The module has a quiz, and the user has submitted answers for it.
                             EXISTS (
                                 SELECT 1
                                 FROM user_answers ua
@@ -71,10 +73,10 @@ try {
     $normal_users = $stmt_users->fetchAll();
 
     $sql_admins = "SELECT u.id, u.first_name, u.last_name, u.username, u.staff_id, u.position, u.phone_number, u.gender, u.role, u.status, d.name as department_name 
-                    FROM users u 
-                    LEFT JOIN departments d ON u.department_id = d.id
-                    WHERE u.role = 'admin'
-                    ORDER BY u.first_name, u.last_name";
+                   FROM users u 
+                   LEFT JOIN departments d ON u.department_id = d.id
+                   WHERE u.role = 'admin'
+                   ORDER BY u.first_name, u.last_name";
     $stmt_admins = $pdo->query($sql_admins);
     $admin_users = $stmt_admins->fetchAll();
     
@@ -101,12 +103,19 @@ require_once 'includes/header.php';
             <button id="bulk-upload-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors">
                 ↑ Bulk Upload
             </button>
+             <button id="delete-all-btn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-colors">
+                Delete All Users
+            </button>
         </div>
     </div>
 
     <!-- Filter Form -->
     <div class="bg-white p-4 rounded-lg shadow-md mb-6">
-        <form method="GET" action="manage_users.php" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <form method="GET" action="manage_users.php" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+                <label for="search" class="block text-sm font-medium text-gray-700">Search User</label>
+                <input type="text" name="search" id="search" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500" placeholder="Name, Staff ID..." value="<?= htmlspecialchars($search_term ?? '') ?>">
+            </div>
             <div>
                 <label for="department" class="block text-sm font-medium text-gray-700">Filter by Department</label>
                 <select name="department" id="department" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
@@ -157,7 +166,7 @@ require_once 'includes/header.php';
                     <tr><td colspan="11" class="text-center py-10 text-gray-500">No users found.</td></tr>
                 <?php else: ?>
                     <?php foreach ($normal_users as $index => $user): ?>
-                        <?php $progress_percentage = round(($user['completed_modules'] / $total_modules) * 100); ?>
+                        <?php $progress_percentage = $total_modules > 0 ? round(($user['completed_modules'] / $total_modules) * 100) : 0; ?>
                         <tr id="user-row-<?= $user['id'] ?>">
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm"><?= $offset + $index + 1 ?></td>
                             <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm font-semibold"><?= htmlspecialchars($user['first_name'] . ' ' . $user['last_name']) ?></td>
@@ -198,16 +207,31 @@ require_once 'includes/header.php';
     
     <!-- Pagination for Normal Users -->
     <?php if ($total_pages > 1): ?>
-        <div class="py-6 flex justify-center">
-            <nav class="flex rounded-md shadow">
-                <?php $pagination_params = http_build_query(['department' => $filter_dept, 'status' => $filter_status]); ?>
-                <a href="?page=<?= max(1, $current_page - 1) ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-l-md hover:bg-gray-50">Previous</a>
-                <?php for ($i = 1; $i <= $total_pages; $i++): ?>
-                    <a href="?page=<?= $i ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium <?= $i == $current_page ? 'bg-blue-600 text-white' : 'text-gray-700 bg-white hover:bg-gray-50' ?>"><?= $i ?></a>
-                <?php endfor; ?>
-                <a href="?page=<?= min($total_pages, $current_page + 1) ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-r-md hover:bg-gray-50">Next</a>
-            </nav>
-        </div>
+    <div class="py-6 flex justify-center">
+        <nav class="flex rounded-md shadow">
+            <?php 
+            $pagination_params = http_build_query(['department' => $filter_dept, 'status' => $filter_status, 'search' => $search_term]);
+            $range = 2; // Number of pages to show around the current page
+            ?>
+            <a href="?page=<?= max(1, $current_page - 1) ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-l-md hover:bg-gray-50">Previous</a>
+            
+            <?php if ($current_page > $range + 1): ?>
+                <a href="?page=1&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">1</a>
+                <span class="px-4 py-2 text-sm font-medium text-gray-700 bg-white">...</span>
+            <?php endif; ?>
+
+            <?php for ($i = max(1, $current_page - $range); $i <= min($total_pages, $current_page + $range); $i++): ?>
+                <a href="?page=<?= $i ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium <?= $i == $current_page ? 'bg-blue-600 text-white' : 'text-gray-700 bg-white hover:bg-gray-50' ?>"><?= $i ?></a>
+            <?php endfor; ?>
+
+            <?php if ($current_page < $total_pages - $range): ?>
+                <span class="px-4 py-2 text-sm font-medium text-gray-700 bg-white">...</span>
+                <a href="?page=<?= $total_pages ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"><?= $total_pages ?></a>
+            <?php endif; ?>
+
+            <a href="?page=<?= min($total_pages, $current_page + 1) ?>&<?= $pagination_params ?>" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-r-md hover:bg-gray-50">Next</a>
+        </nav>
+    </div>
     <?php endif; ?>
 
     <!-- Admin Users Table -->
@@ -357,8 +381,8 @@ require_once 'includes/header.php';
                 <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                     <h3 class="text-lg leading-6 font-medium text-gray-900">Bulk Upload Users</h3>
                     <div class="mt-4">
-                        <label for="user_file" class="block text-sm font-medium text-gray-700">Upload CSV File</label>
-                        <input type="file" name="user_file" id="user_file" required accept=".csv" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                        <label for="user_file" class="block text-sm font-medium text-gray-700">Upload CSV or Excel File</label>
+                        <input type="file" name="user_file" id="user_file" required accept=".csv, .xlsx" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
                         <p class="text-xs text-gray-500 mt-2">
                             File must be a CSV with columns: `staff_id`, `first_name`, `last_name`, `gender`, `position`, `department_name`, `phone_number`. <br>
                             <a href="../templates/question_template.csv" class="text-blue-600 hover:underline" download>Download Template</a>
@@ -387,6 +411,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const bulkCancelBtn = document.getElementById('bulk-cancel-btn');
     const userForm = document.getElementById('user-form');
     const bulkForm = document.getElementById('bulk-upload-form');
+    const deleteAllBtn = document.getElementById('delete-all-btn');
 
     if (addUserBtn) {
         addUserBtn.addEventListener('click', () => {
@@ -403,6 +428,10 @@ document.addEventListener('DOMContentLoaded', function() {
             if (bulkForm) bulkForm.reset();
             bulkModal.classList.remove('hidden');
         });
+    }
+
+    if (deleteAllBtn) {
+        deleteAllBtn.addEventListener('click', deleteAllUsers);
     }
     
     if (userCancelBtn) {
@@ -446,9 +475,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(res => res.json())
                 .then(data => {
                     if (data.success) {
-                        feedbackDiv.textContent = data.message;
-                        feedbackDiv.className = 'px-6 py-2 text-sm text-green-600';
-                        setTimeout(() => location.reload(), 2000);
+                        let feedbackHTML = `<p>${data.message}</p>`;
+                        
+                        if (data.failed_entries && data.failed_entries.length > 0) {
+                            feedbackHTML += '<p class="mt-2 font-semibold text-left">Failure Details:</p>';
+                            feedbackHTML += '<ul class="list-disc list-inside text-left max-h-40 overflow-y-auto border rounded-md p-2 bg-red-50">';
+                            data.failed_entries.forEach(error => {
+                                feedbackHTML += `<li><small>${error}</small></li>`;
+                            });
+                            feedbackHTML += '</ul>';
+                            feedbackDiv.className = 'px-6 py-2 text-sm text-red-600 text-center';
+                        } else {
+                            feedbackDiv.className = 'px-6 py-2 text-sm text-green-600';
+                            setTimeout(() => location.reload(), 2000);
+                        }
+
+                        feedbackDiv.innerHTML = feedbackHTML;
                     } else {
                         feedbackDiv.textContent = 'Error: ' + data.message;
                         feedbackDiv.className = 'px-6 py-2 text-sm text-red-600';
@@ -506,6 +548,23 @@ function deleteUser(id) {
     }
 }
 
+function deleteAllUsers() {
+    if (confirm('ARE YOU ABSOLUTELY SURE?\n\nThis will permanently delete all normal users and their associated progress. This action cannot be undone.')) {
+        const formData = new FormData();
+        formData.append('action', 'delete_all_normal_users');
+        fetch('../api/admin/user_crud.php', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+    }
+}
+
 function resetPassword(id) {
     if (confirm('Are you sure you want to reset this user\'s password? They will be forced to create a new one on their next login.')) {
         const formData = new FormData();
@@ -542,4 +601,4 @@ function unlockUser(id) {
 }
 </script>
 
-<?php require_once 'includes/footer.php'; ?>
+<?php require_once 'includes/footer.php';

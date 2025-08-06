@@ -2,7 +2,7 @@
 /**
  * Video CRUD API Endpoint
  *
- * Handles adding and editing the video for a specific module.
+ * Handles adding, editing, and deleting the video for a specific module.
  */
 
 header('Content-Type: application/json');
@@ -19,14 +19,18 @@ $response = ['success' => false, 'message' => 'Invalid request.'];
 $action = $_POST['action'] ?? '';
 
 try {
+    // Module ID is required for most actions
     $module_id = filter_input(INPUT_POST, 'module_id', FILTER_VALIDATE_INT);
-    if (!$module_id) {
-        throw new Exception('A valid Module ID is required.');
+    if (!$module_id && $action !== 'delete') {
+         if (!$module_id) {
+            throw new Exception('A valid Module ID is required.');
+         }
     }
 
     switch ($action) {
         case 'add_video':
         case 'edit_video':
+            if (!$module_id) throw new Exception('A valid Module ID is required for adding/editing.');
             $video_id = filter_input(INPUT_POST, 'video_id', FILTER_VALIDATE_INT);
             $video_title = trim($_POST['video_title']);
             $video_description = trim($_POST['video_description']);
@@ -38,7 +42,11 @@ try {
             if (isset($_FILES['video_file']) && $_FILES['video_file']['error'] === UPLOAD_ERR_OK) {
                 $upload_dir_vid = '../../uploads/videos/';
                 if (!is_dir($upload_dir_vid)) mkdir($upload_dir_vid, 0755, true);
-                $video_file_name = 'module_' . $module_id . '_' . time() . '.mp4';
+                
+                // --- FIX --- Use the original file extension instead of hardcoding .mp4
+                $video_extension = pathinfo($_FILES['video_file']['name'], PATHINFO_EXTENSION);
+                $video_file_name = 'module_' . $module_id . '_' . time() . '.' . $video_extension;
+
                 if (move_uploaded_file($_FILES['video_file']['tmp_name'], $upload_dir_vid . $video_file_name)) {
                     $video_path = $video_file_name;
                 } else {
@@ -74,8 +82,58 @@ try {
             }
             $response = ['success' => true, 'message' => 'Video information saved successfully.'];
             break;
+
+        case 'delete':
+            if (!$module_id) {
+                throw new Exception('Invalid Module ID for deletion.');
+            }
+            
+            $pdo->beginTransaction();
+
+            // Find the video record to get file paths
+            $stmt = $pdo->prepare("SELECT id, video_path, thumbnail_path FROM videos WHERE module_id = ?");
+            $stmt->execute([$module_id]);
+            $video = $stmt->fetch();
+
+            if ($video) {
+                // 1. Delete the physical files if they exist, with error checking
+                if ($video['video_path']) {
+                    $video_file_path = '../../uploads/videos/' . $video['video_path'];
+                    if (file_exists($video_file_path) && is_file($video_file_path)) {
+                        if (!unlink($video_file_path)) {
+                            throw new Exception('Could not delete video file. Check server permissions.');
+                        }
+                    }
+                }
+
+                if ($video['thumbnail_path']) {
+                    $thumb_file_path = '../../uploads/thumbnails/' . $video['thumbnail_path'];
+                     if (file_exists($thumb_file_path) && is_file($thumb_file_path)) {
+                        if (!unlink($thumb_file_path)) {
+                            throw new Exception('Could not delete thumbnail file. Check server permissions.');
+                        }
+                    }
+                }
+
+                // 2. Delete the database record ONLY if file deletion was successful
+                $delete_stmt = $pdo->prepare("DELETE FROM videos WHERE id = ?");
+                $delete_stmt->execute([$video['id']]);
+
+                $pdo->commit();
+                $response = ['success' => true, 'message' => 'Video deleted successfully.'];
+            } else {
+                $pdo->rollBack();
+                $response = ['success' => true, 'message' => 'No video was associated with this module.'];
+            }
+            break;
+            
+        default:
+            throw new Exception('Invalid action specified.');
     }
 } catch (Exception $e) {
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     $response['message'] = $e->getMessage();
 }
 

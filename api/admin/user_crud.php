@@ -1,9 +1,14 @@
 <?php
 /**
- * User CRUD API Endpoint (BULK UPLOAD FIXED)
+ * User CRUD API Endpoint (BULK UPLOAD FINAL FIX)
  *
- * Handles all admin actions for users, with corrected logic for bulk CSV uploads.
+ * Handles all admin actions for users, with corrected logic for bulk uploads
+ * supporting both CSV and XLSX files.
  */
+
+require_once '../../vendor/autoload.php';
+
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 header('Content-Type: application/json');
 require_once '../../includes/db_connect.php';
@@ -136,41 +141,123 @@ try {
                 throw new Exception('File upload error.');
             }
             $file_path = $_FILES['user_file']['tmp_name'];
+            $file_name = $_FILES['user_file']['name'];
             
-            $file_type = mime_content_type($file_path);
-            if ($file_type !== 'text/plain' && $file_type !== 'text/csv') {
-                 throw new Exception('Invalid file type. Please upload a CSV file.');
+            $file_extension = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+            $allowed_extensions = ['csv', 'xlsx'];
+            if (!in_array($file_extension, $allowed_extensions)) {
+                throw new Exception('Invalid file type. Please upload a CSV or XLSX file.');
             }
 
-            $file = fopen($file_path, 'r');
-            if ($file === false) throw new Exception('Could not open uploaded file.');
+            $spreadsheet = IOFactory::load($file_path);
+            $sheet = $spreadsheet->getActiveSheet();
+            
+            $header_row = null;
+            $data_rows = [];
+            $found_header = false;
+
+            foreach ($sheet->getRowIterator() as $row) {
+                $cellIterator = $row->getCellIterator();
+                $cellIterator->setIterateOnlyExistingCells(false);
+                $current_row_data = [];
+                foreach ($cellIterator as $cell) {
+                    $current_row_data[] = $cell->getFormattedValue();
+                }
+
+                if (empty(array_filter($current_row_data, function($a) { return $a !== null && $a !== ''; }))) {
+                    continue;
+                }
+
+                if (!$found_header) {
+                    $header_row = $current_row_data;
+                    $found_header = true;
+                } else {
+                    $data_rows[] = $current_row_data;
+                }
+            }
+
+            if ($header_row === null) {
+                throw new Exception('Could not find a header row in the uploaded file. The file might be empty or formatted incorrectly.');
+            }
+
+            $header_aliases = [
+                'staff_id' => ['id', 'staffid', 'staff_id'],
+                'first_name' => ['firstname', 'first_name'],
+                'last_name' => ['lastname', 'last_name'],
+                'gender' => ['gender'],
+                'position' => ['position'],
+                'department_name' => ['department', 'department_name'],
+                'phone_number' => ['phone', 'phonenumber', 'phone_number']
+            ];
+
+            $column_map = [];
+            $raw_headers = [];
+            foreach ($header_row as $index => $header_name) {
+                if ($header_name) {
+                    $raw_headers[] = $header_name;
+                    $cleaned_header = preg_replace('/[\x00-\x1F\x7F\xA0]/u', '', trim($header_name));
+                    $normalized_header = strtolower(preg_replace('/[^a-z0-9]/i', '', $cleaned_header));
+                    
+                    foreach ($header_aliases as $canonical_name => $aliases) {
+                        if (in_array($normalized_header, $aliases)) {
+                            $column_map[$canonical_name] = $index;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (empty($column_map)) {
+                $raw_header_string = !empty($raw_headers) ? '"' . implode('", "', array_map('htmlspecialchars', $raw_headers)) . '"' : 'None';
+                throw new Exception(
+                    "Could not find any valid headers in the uploaded file. The script read the following headers: [{$raw_header_string}]. Please ensure headers are in the first row and are not empty."
+                );
+            }
+
+            $required_headers = ['staff_id', 'first_name', 'last_name', 'department_name'];
+            foreach ($required_headers as $required_header) {
+                if (!isset($column_map[$required_header])) {
+                    $found_headers = !empty($column_map) ? '"' . implode('", "', array_keys($column_map)) . '"' : 'None';
+                    throw new Exception(
+                        "Missing required column for '{$required_header}'. Please check your file's column headers. " .
+                        "Found the following valid headers: {$found_headers}."
+                    );
+                }
+            }
 
             $depts_stmt = $pdo->query("SELECT name, id FROM departments");
             $departments = $depts_stmt->fetchAll(PDO::FETCH_KEY_PAIR);
             $departments_lower = array_change_key_case($departments, CASE_LOWER);
 
-            $header = fgetcsv($file); // Skip header row
             $success_count = 0;
             $fail_count = 0;
             $failed_entries = [];
 
             $pdo->beginTransaction();
-            while (($row = fgetcsv($file)) !== false) {
-                try {
-                    $staff_id = $row[0] ?? '';
-                    $first_name = $row[1] ?? '';
-                    $last_name = $row[2] ?? '';
-                    $gender = $row[3] ?? null;
-                    $position = $row[4] ?? null;
-                    $department_name_csv = $row[5] ?? '';
-                    $department_name = strtolower(trim($department_name_csv));
-                    $phone_number = $row[6] ?? null;
+            foreach ($data_rows as $row_index => $row) {
+                $staff_id = trim($row[$column_map['staff_id']] ?? '');
+                
+                if (empty($staff_id)) {
+                    continue;
+                }
 
-                    if (empty($staff_id) || empty($first_name) || empty($last_name) || empty($department_name)) {
-                        throw new Exception("Missing required fields.");
+                $first_name = trim($row[$column_map['first_name']] ?? '');
+                $last_name = trim($row[$column_map['last_name']] ?? '');
+                $department_name_csv = trim($row[$column_map['department_name']] ?? '');
+                
+                $gender = isset($column_map['gender']) ? trim($row[$column_map['gender']] ?? null) : null;
+                $position = isset($column_map['position']) ? trim($row[$column_map['position']] ?? null) : null;
+                $phone_number = isset($column_map['phone_number']) ? trim($row[$column_map['phone_number']] ?? null) : null;
+
+                try {
+                    if (empty($first_name) || empty($last_name) || empty($department_name_csv)) {
+                        throw new Exception("Missing required fields (first_name, last_name, or department_name).");
                     }
                     
-                    $department_id = $departments_lower[$department_name] ?? false;
+                    $cleaned_dept_name = preg_replace('/[[:^print:]]/', '', $department_name_csv);
+                    $department_name_lower = strtolower($cleaned_dept_name);
+                    
+                    $department_id = $departments_lower[$department_name_lower] ?? false;
                     if ($department_id === false) {
                         throw new Exception("Department '{$department_name_csv}' not found.");
                     }
@@ -197,17 +284,24 @@ try {
                     $success_count++;
                 } catch (Exception $e) {
                     $fail_count++;
-                    $failed_entries[] = "Row with Staff ID '{$staff_id}': " . $e->getMessage();
+                    $spreadsheet_row_num = $row_index + 2;
+                    $failed_entries[] = "Row {$spreadsheet_row_num} (Staff ID '{$staff_id}'): " . $e->getMessage();
                 }
             }
             $pdo->commit();
-            fclose($file);
 
             $message = "$success_count users imported successfully.";
             if ($fail_count > 0) {
-                $message .= " $fail_count users failed to import. Details: " . implode(" | ", $failed_entries);
+                $message .= " $fail_count users failed to import.";
             }
-            $response = ['success' => true, 'message' => $message];
+            $response = ['success' => true, 'message' => $message, 'failed_entries' => $failed_entries];
+            break;
+
+        case 'delete_all_normal_users':
+            $stmt = $pdo->prepare("DELETE FROM users WHERE role = 'user'");
+            $stmt->execute();
+            $count = $stmt->rowCount();
+            $response = ['success' => true, 'message' => "Successfully deleted {$count} normal users."];
             break;
 
         default:
@@ -241,4 +335,3 @@ function generate_unique_username(PDO $pdo, string $first_name, string $last_nam
         $counter++;
     }
 }
-?>
